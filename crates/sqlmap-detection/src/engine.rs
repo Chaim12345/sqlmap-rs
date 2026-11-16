@@ -174,7 +174,7 @@ impl<'a> Engine<'a> {
                     return;
                 }
             };
-            let signal = crate::exfil::infer_signal(inj.technique);
+            let signal = crate::exfil::infer_signal(inj.technique, inj.dbms.as_deref());
             let mut ext = crate::exfil::BlindExtractor::new(
                 self.client,
                 self.conf,

