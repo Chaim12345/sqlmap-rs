@@ -76,3 +76,37 @@ fn bulk_file_scans_every_target() {
 
     let _ = std::fs::remove_file(&file);
 }
+
+#[test]
+fn bulk_targets_run_in_parallel_with_threads() {
+    let app = VulnApp::start(8806);
+    let base = format!("http://127.0.0.1:{}", app.1);
+    let file = std::env::temp_dir().join(format!("sqlmaprs-bulkpar-{}.txt", std::process::id()));
+    // Four time-based targets: each detection needs two 1s sleeps, so a
+    // sequential walk costs at least ~8s; --threads 4 should finish sooner.
+    std::fs::write(&file, (0..4).map(|_| format!("{base}/get?id=1\n")).collect::<String>()).unwrap();
+
+    let start = Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_sqlmap-rs"))
+        .arg("-m")
+        .arg(&file)
+        .arg("--technique")
+        .arg("T")
+        .arg("--time-sec")
+        .arg("1")
+        .arg("--threads")
+        .arg("4")
+        .output()
+        .expect("run sqlmap-rs");
+    let elapsed = start.elapsed();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(out.status.success(), "exit status: {:?}\n{stdout}", out.status);
+    assert_eq!(stdout.matches("id (Get) - Time").count(), 4, "{stdout}");
+    assert!(
+        elapsed < Duration::from_secs(7),
+        "4 time-based targets on --threads 4 should beat the ~8s sequential floor: {elapsed:?}"
+    );
+
+    let _ = std::fs::remove_file(&file);
+}

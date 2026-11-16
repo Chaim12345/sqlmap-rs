@@ -39,9 +39,9 @@ cargo run -p sqlmap-cli -- -u "http://localhost/index.php" --crawl 2 --threads 8
 cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --identify-waf
 # scan a saved raw HTTP request (Burp-style), flags override the file
 cargo run -p sqlmap-cli -- -r login-request.txt
-# scan every target URL listed in a file, one per line
-# (blank lines and # comments ignored)
-cargo run -p sqlmap-cli -- -m targets.txt
+# scan every target URL listed in a file, one per line (blank lines and
+# comments ignored); targets run --threads at a time
+cargo run -p sqlmap-cli -- -m targets.txt --threads 4
 # route all requests through an HTTP proxy
 cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --proxy http://127.0.0.1:8080
 ```
@@ -80,9 +80,9 @@ push.
   the scalar-subquery exfil channels); unknown DBMS tags fall back to MySQL
   with a log note
 - A handful of upstream tamper scripts deliberately skipped (greatest,
-  plus2concat/plus2fnconcat, securesphere; reasons in the tamper crate docs), parallel multi-target scanning (the
-  `-m` bulk file walks targets sequentially), proxy auth/SOCKS and
-  proxying HTTPS targets (`--proxy` covers plain HTTP CONNECT-less relays)
+  plus2concat/plus2fnconcat, securesphere; reasons in the tamper crate docs)
+- Proxy auth/SOCKS and proxying HTTPS targets
+  (`--proxy` covers plain HTTP CONNECT-less relays)
 - The session store is a per-target JSON cache, not sqlmap's sqlite schema
 
 The boundary between ported and not-ported is enforced by the code: the engine

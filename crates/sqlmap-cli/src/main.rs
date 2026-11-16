@@ -208,22 +208,40 @@ fn main() {
 
     // sqlmap -m: every non-empty, non-comment line is a target scanned with
     // the same options; the exit status reflects whether ANY target was
-    // injectable.
+    // injectable. Targets run --threads at a time (sqlmap walks them
+    // sequentially; here the worker pool's width is reused across targets).
     if let Some(file) = &args.bulk_file {
         let text = std::fs::read_to_string(file).unwrap_or_else(|e| {
             eprintln!("[-] cannot read bulk file {file}: {e}");
             std::process::exit(2);
         });
+        let targets: Vec<String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(str::to_string)
+            .collect();
+        let width = conf.threads.max(1);
         let mut any = false;
-        for line in text.lines() {
-            let target = line.trim();
-            if target.is_empty() || target.starts_with('#') {
-                continue;
-            }
-            let mut tconf = conf.clone();
-            tconf.target_url = target.to_string();
-            tconf.session_file = None; // per-target caches are keyed by URL; bulk keeps it simple
-            any |= run_target(&tconf, args.json);
+        let mut i = 0;
+        while i < targets.len() {
+            let end = (i + width).min(targets.len());
+            let results = std::thread::scope(|s| {
+                targets[i..end]
+                    .iter()
+                    .map(|target| {
+                        let mut tconf = conf.clone();
+                        tconf.target_url = target.clone();
+                        tconf.session_file = None; // per-target caches are keyed by URL; bulk keeps it simple
+                        s.spawn(move || run_target(&tconf, args.json))
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or(false))
+                    .collect::<Vec<_>>()
+            });
+            any |= results.into_iter().any(|x| x);
+            i = end;
         }
         std::process::exit(if any { 0 } else { 1 });
     }
