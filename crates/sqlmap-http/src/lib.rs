@@ -1,2 +1,9 @@
-//! sqlmap-rs `http` crate - Rust port of the corresponding sqlmap subsystem.
-//! See the repository README module map for port status.
+//! HTTP request engine and page-comparison logic.
+//! Port of sqlmap `lib/request/*` (connect, redirect handling subset) and
+//! `lib/core/comparison.py` (page similarity ratio).
+
+pub mod client;
+pub mod comparison;
+pub mod params;
+
+pub use client::{Client, RequestSpec, Response};
