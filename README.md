@@ -1,8 +1,8 @@
 # sqlmap-rs
 
 A Rust port of [sqlmap](https://github.com/sqlmapproject/sqlmap) - the automatic SQL
-injection and database takeover tool by Bernardo Damele A. G. (@stamparm) and
-Miroslav Stampar (@stamparm) / the sqlmapproject team.
+injection and database takeover tool originally written by Bernardo Damele A. G.
+(@inquisb) and Miroslav Stampar (@stamparm), maintained by the sqlmapproject team.
 
 **License:** GPL-2.0-only, the same license as upstream sqlmap. This is a derivative
 work; all credit for the original architecture, payload sets, tamper scripts and
