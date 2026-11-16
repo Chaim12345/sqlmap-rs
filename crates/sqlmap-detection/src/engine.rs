@@ -592,7 +592,18 @@ pub(crate) fn assemble(conf: &Config, log: &mut Vec<String>, param: &Param, boun
             .replace("[RANDSTR]", &rs)
             .replace("[RANDNUM]", &rn.to_string());
         let prefix = boundary.prefix.clone();
-        let mut joined = format!("{}{}{}{}", param.value, prefix, rendered, suffix);
+        // sqlmap agent.prefixQuery: a space separates prefix and payload for
+        // non-stacked techniques (stacked payloads start with ';' and get no
+        // space; no space next to a paren boundary either).
+        let gap = if rendered.starts_with(';')
+            || prefix.ends_with('(')
+            || rendered.starts_with('(')
+        {
+            ""
+        } else {
+            " "
+        };
+        let mut joined = format!("{}{}{}{}{}", param.value, prefix, gap, rendered, suffix);
         if !conf.tampers.is_empty() {
             match sqlmap_tamper::apply_all(&conf.tampers, &joined, seed) {
                 Ok(t) => joined = t,
