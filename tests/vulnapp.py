@@ -38,6 +38,9 @@ def xpath_error(marker: str) -> str:
 
 def eval_value(value: str) -> str:
     """Decide the page for an injected parameter value."""
+    # MySQL treats /**/ as whitespace (tamper space2comment); keywords are
+    # case-insensitive (tamper randomcase) - our regexes below are already re.I.
+    value = value.replace("/**/", " ")
     # Error-based: ExtractValue(1,CONCAT(0x7e,<marker>)) echoes the marker.
     m = re.search(r"ExtractValue\(1,\s*CONCAT\(0x7e,\s*([A-Za-z0-9]+)\)\)", value, re.I)
     if m:
@@ -67,6 +70,11 @@ class Handler(BaseHTTPRequestHandler):
             page = eval_value(unquote_plus(params.get("id", "1")))
         elif u.path == "/item":
             page = eval_value(unquote_plus(params.get("name", "widget")))
+        elif u.path == "/session":
+            cookies = dict(
+                c.strip().split("=", 1) for c in (self.headers.get("Cookie") or "").split(";") if "=" in c
+            )
+            page = eval_value(unquote_plus(cookies.get("sid", "abc123")))
         body = page.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
@@ -75,6 +83,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     do_GET = _handle
+
+    def _handle_post(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode(errors="replace")
+        u = urlparse(self.path)
+        params = dict(parse_qsl(body))
+        page = NORMAL
+        if u.path == "/login":
+            page = eval_value(unquote_plus(params.get("user", "admin")))
+        out = page.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    do_POST = _handle_post
 
     def log_message(self, *a):
         pass

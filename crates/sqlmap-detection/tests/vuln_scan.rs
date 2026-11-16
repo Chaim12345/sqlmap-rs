@@ -89,6 +89,61 @@ fn finds_string_injection_and_fingerprints_mysql() {
 }
 
 #[test]
+fn finds_post_body_injection() {
+    let app = VulnApp::start(8744);
+    let conf = Config {
+        target_url: app.url("/login"),
+        data: Some("user=admin&pass=x".into()),
+        techniques: vec![Technique::Boolean, Technique::Error],
+        timeout: 15,
+        ..Config::default()
+    };
+    let kb = scan(&conf);
+    for tech in [Technique::Boolean, Technique::Error] {
+        assert!(
+            kb.injections.iter().any(|i| i.place == sqlmap_core::config::Place::Post && i.parameter == "user" && i.technique == tech),
+            "expected POST {tech:?} injection on user"
+        );
+    }
+    // 'pass' must not be flagged by anything: it is never mutated to error.
+    assert!(kb.injections.iter().all(|i| i.parameter != "pass"));
+}
+
+#[test]
+fn finds_cookie_injection() {
+    let app = VulnApp::start(8745);
+    let conf = Config {
+        target_url: app.url("/session"),
+        cookie: Some("sid=abc123".into()),
+        techniques: vec![Technique::Boolean, Technique::Error],
+        timeout: 15,
+        ..Config::default()
+    };
+    let kb = scan(&conf);
+    assert!(
+        kb.injections.iter().any(|i| i.place == sqlmap_core::config::Place::Cookie && i.parameter == "sid"),
+        "expected Cookie injection on sid, got {:?}", kb.injections
+    );
+}
+
+#[test]
+fn tamper_chain_still_detects() {
+    let app = VulnApp::start(8746);
+    let conf = Config {
+        target_url: app.url("/get?id=1"),
+        techniques: vec![Technique::Boolean],
+        tampers: vec!["space2comment".into(), "randomcase".into()],
+        timeout: 15,
+        ..Config::default()
+    };
+    let kb = scan(&conf);
+    assert!(
+        kb.injections.iter().any(|i| i.technique == Technique::Boolean),
+        "tampered boolean injection not found"
+    );
+}
+
+#[test]
 fn clean_param_reports_nothing() {
     let app = VulnApp::start(8743);
     // /other has no params at all - engine must report no testables, not crash.
