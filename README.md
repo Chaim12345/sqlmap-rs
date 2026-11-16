@@ -70,7 +70,7 @@ push.
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind,stacked_queries,inline_query}.xml` | ported (level 1-2 entries, incl. UpdateXML, subquery SLEEP, MySQL # comment variants) |
 | `sqlmap-tamper` | `tamper/*.py` | partial: 30 scripts |
-| `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py`, `lib/techniques/union/use.py` | ported: boolean, error-based, time-based, stacked, inline; UNION (column probing + data retrieval); exfiltration `--dbs/--tables/--columns/--dump` over both channels; independent UNION probes/fetches run through the worker pool |
+| `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py`, `lib/techniques/union/use.py`, `plugins/dbms/*/enumeration.py` | ported: boolean, error-based, time-based, stacked, inline; UNION (column probing + data retrieval); exfiltration `--dbs/--tables/--columns/--dump` over both channels with MySQL/PostgreSQL/MSSQL/Oracle query sets (MySQL is the only set the bundled MySQL-emulating test app can verify end-to-end); independent UNION probes/fetches run through the worker pool |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
 ### Deliberately not ported
@@ -79,8 +79,9 @@ push.
 - Data retrieval through the stacked-query (S) and inline-query (Q)
   channels: detection + delay-confirmed proof is ported, `--dbs/--dump` over
   those channels is not
-- Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
-  the information_schema queries used by --dbs/--dump are MySQL-flavored)
+- A SQLite enumeration query set (its sqlite_master/PRAGMA shape does not fit
+  the scalar-subquery exfil channels); unknown DBMS tags fall back to MySQL
+  with a log note
 - The remaining ~42 tamper scripts, parallel multi-target scanning (the
   `-m` bulk file walks targets sequentially), proxy auth/SOCKS and
   proxying HTTPS targets (`--proxy` covers plain HTTP CONNECT-less relays)

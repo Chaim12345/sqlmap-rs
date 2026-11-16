@@ -14,6 +14,7 @@
 pub mod engine;
 pub mod exfil;
 pub mod forms_scan;
+pub mod queries;
 pub mod session;
 pub mod waf;
 
