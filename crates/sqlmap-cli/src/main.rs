@@ -132,6 +132,10 @@ struct Args {
     flush_session: bool,
 
     /// Scan multiple targets listed in a text file, one URL per line (sqlmap -m)
+    /// Route requests through this HTTP proxy (sqlmap --proxy)
+    #[arg(long)]
+    proxy: Option<String>,
+    /// Scan every target URL listed in the file (sqlmap -m)
     #[arg(short = 'm', long = "bulk-file")]
     bulk_file: Option<String>,
 }
@@ -196,6 +200,7 @@ fn main() {
         threads: args.threads.max(1),
         identify_waf: args.identify_waf,
         ignore_set_cookies: args.ignore_set_cookie,
+        proxy: args.proxy,
         session_file: args.session,
         flush_session: args.flush_session,
         ..Config::default()

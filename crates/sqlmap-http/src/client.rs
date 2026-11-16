@@ -45,6 +45,13 @@ impl Client {
         if !conf.follow_redirects {
             builder = builder.redirects(0);
         }
+        if let Some(proxy) = &conf.proxy {
+            // Fail loudly: silently dropping --proxy would leak requests the
+            // user meant to route through it.
+            let proxy = ureq::Proxy::new(proxy.as_str())
+                .unwrap_or_else(|e| panic!("invalid --proxy {proxy}: {e}"));
+            builder = builder.proxy(proxy);
+        }
         // Seed the jar from --cookie so those cookies persist alongside
         // whatever the server sets later.
         let mut jar = std::collections::BTreeMap::new();

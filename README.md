@@ -42,6 +42,8 @@ cargo run -p sqlmap-cli -- -r login-request.txt
 # scan every target URL listed in a file, one per line
 # (blank lines and # comments ignored)
 cargo run -p sqlmap-cli -- -m targets.txt
+# route all requests through an HTTP proxy
+cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --proxy http://127.0.0.1:8080
 ```
 
 Session cookies persist across requests: every response's Set-Cookie updates
@@ -78,7 +80,8 @@ push.
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
   the information_schema queries used by --dbs/--dump are MySQL-flavored)
 - The remaining ~50 tamper scripts, parallel multi-target scanning (the
-  `-m` bulk file walks targets sequentially), proxy support
+  `-m` bulk file walks targets sequentially), proxy auth/SOCKS and
+  proxying HTTPS targets (`--proxy` covers plain HTTP CONNECT-less relays)
 - The session store is a per-target JSON cache, not sqlmap's sqlite schema
 
 The boundary between ported and not-ported is enforced by the code: the engine
