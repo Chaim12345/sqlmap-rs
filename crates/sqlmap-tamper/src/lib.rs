@@ -463,8 +463,173 @@ pub fn base64encode(payload: &str) -> String {
     out
 }
 
+
+/// tamper/htmlencode.py: every non-alphanumeric char -> &#xHH;
+pub fn htmlencode(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len() * 6);
+    for c in payload.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            out.push_str(&format!("&#x{:02X};", c as u32));
+        }
+    }
+    out
+}
+
+/// tamper/bluecoat.py: spaces -> TAB, then '=' -> LIKE.
+pub fn bluecoat(payload: &str) -> String {
+    payload.replace(' ', "%09").replace('=', " LIKE ")
+}
+
+/// tamper/commalesslimit.py: "LIMIT a,b" -> "LIMIT b OFFSET a" (MySQL).
+pub fn commalesslimit(payload: &str) -> String {
+    let upper = payload.to_ascii_uppercase();
+    let Some(pos) = upper.find("LIMIT ") else {
+        return payload.to_string();
+    };
+    let rest = &payload[pos + 6..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == ',').collect();
+    let Some((a, b)) = digits.split_once(',') else {
+        return payload.to_string();
+    };
+    if a.is_empty() || b.is_empty() {
+        return payload.to_string();
+    }
+    format!("{}LIMIT {} OFFSET {}{}", &payload[..pos], b, a, &rest[digits.len()..])
+}
+
+/// tamper/concat2concatws.py: CONCAT( -> CONCAT_WS(MID(CHAR(0),0,0), (MySQL).
+pub fn concat2concatws(payload: &str) -> String {
+    replace_word_prefix(payload, "CONCAT(", "CONCAT_WS(MID(CHAR(0),0,0),")
+}
+
+/// Case-insensitive prefix replacement used by concat2concatws.
+fn replace_word_prefix(payload: &str, word: &str, replacement: &str) -> String {
+    let upper = payload.to_ascii_uppercase();
+    let mut out = String::with_capacity(payload.len());
+    let mut i = 0;
+    while i < payload.len() {
+        if upper[i..].starts_with(word) {
+            out.push_str(replacement);
+            i += word.len();
+        } else {
+            out.push(payload[i..].chars().next().unwrap());
+            i += payload[i..].chars().next().unwrap().len_utf8();
+        }
+    }
+    out
+}
+
+/// Split the inside of a parenthesized call at its top-level comma.
+fn split_top_level(args: &str) -> Option<(&str, &str)> {
+    let mut depth = 0;
+    for (i, c) in args.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => return Some((&args[..i], &args[i + 1..])),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// tamper/ifnull2casewhenisnull.py (MySQL):
+/// IFNULL(A, B) -> CASE WHEN ISNULL(A) THEN (B) ELSE (A) END
+pub fn ifnull2casewhenisnull(payload: &str) -> String {
+    let upper = payload.to_ascii_uppercase();
+    let Some(pos) = upper.find("IFNULL(") else {
+        return payload.to_string();
+    };
+    let start = pos + 7;
+    let mut depth = 1;
+    let mut end = start;
+    for (i, c) in payload[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return payload.to_string();
+    }
+    let Some((a, b)) = split_top_level(&payload[start..end]) else {
+        return payload.to_string();
+    };
+    format!(
+        "{}CASE WHEN ISNULL({}) THEN ({}) ELSE ({}) END{}",
+        &payload[..pos], a, b, a, &payload[end + 1..]
+    )
+}
+
+/// tamper/modsecurityversioned.py: whole payload inside /*!30xxx ... */
+pub fn modsecurityversioned(payload: &str) -> String {
+    format!("/*!30000{payload}*/")
+}
+
+/// tamper/modsecurityzeroversioned.py: whole payload inside /*!00000 ... */
+pub fn modsecurityzeroversioned(payload: &str) -> String {
+    format!("/*!00000{payload}*/")
+}
+
+/// tamper/unmagicquotes.py: ' -> %bf%27, trailing comment appended.
+pub fn unmagicquotes(payload: &str) -> String {
+    format!("{}-- ", payload.replace('\'', "%bf%27"))
+}
+
+/// tamper/overlongutf8more.py: only the quote/bracket chars get the
+/// 2-byte overlong UTF-8 encoding (', ", <, >).
+pub fn overlongutf8more(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len());
+    for b in payload.bytes() {
+        match b {
+            b'\'' | b'"' | b'<' | b'>' => {
+                out.push_str(&format!("%{:02X}%{:02X}", 0xC0 | (b >> 6), 0x80 | (b & 0x3F)))
+            }
+            _ => out.push(b as char),
+        }
+    }
+    out
+}
+
+/// tamper/versionedkeywords.py: each non-function keyword inside /*! ... */
+pub fn versionedkeywords(payload: &str) -> String {
+    const KEYWORDS: [&str; 6] = ["AND", "OR", "SELECT", "WHERE", "UNION", "SLEEP"];
+    let mut out = payload.to_string();
+    for kw in KEYWORDS {
+        out = replace_word(&out, kw, &format!("/*!{kw}*/"));
+    }
+    out
+}
+
+/// tamper/informationschemacomment.py: INFORMATION_SCHEMA -> INFORMATION_SCHEMA/**/
+pub fn informationschemacomment(payload: &str) -> String {
+    replace_word(payload, "INFORMATION_SCHEMA", "INFORMATION_SCHEMA/**/")
+}
+
+/// tamper/charunicodeencode.py: non-alphanumeric chars -> %u00XX.
+pub fn charunicodeencode(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len() * 6);
+    for c in payload.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%u{:04X}", c as u32));
+        }
+    }
+    out
+}
+
 /// Names understood by the engine (sqlmap --tamper values).
-pub const AVAILABLE: [&str; 30] = [
+pub const AVAILABLE: [&str; 42] = [
     "space2comment",
     "space2plus",
     "space2hash",
@@ -495,6 +660,18 @@ pub const AVAILABLE: [&str; 30] = [
     "space2morehash",
     "space2dash",
     "base64encode",
+    "htmlencode",
+    "bluecoat",
+    "commalesslimit",
+    "concat2concatws",
+    "ifnull2casewhenisnull",
+    "modsecurityversioned",
+    "modsecurityzeroversioned",
+    "unmagicquotes",
+    "overlongutf8more",
+    "versionedkeywords",
+    "informationschemacomment",
+    "charunicodeencode",
 ];
 
 /// Apply named tampers in order (sqlmap applies them in the order given).
@@ -533,6 +710,18 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
             "space2morehash" => space2morehash(&out, &mut rng),
             "space2dash" => space2dash(&out, &mut rng),
             "base64encode" => base64encode(&out),
+            "htmlencode" => htmlencode(&out),
+            "bluecoat" => bluecoat(&out),
+            "commalesslimit" => commalesslimit(&out),
+            "concat2concatws" => concat2concatws(&out),
+            "ifnull2casewhenisnull" => ifnull2casewhenisnull(&out),
+            "modsecurityversioned" => modsecurityversioned(&out),
+            "modsecurityzeroversioned" => modsecurityzeroversioned(&out),
+            "unmagicquotes" => unmagicquotes(&out),
+            "overlongutf8more" => overlongutf8more(&out),
+            "versionedkeywords" => versionedkeywords(&out),
+            "informationschemacomment" => informationschemacomment(&out),
+            "charunicodeencode" => charunicodeencode(&out),
             other => return Err(format!("unknown tamper script: {other} (available: {AVAILABLE:?})")),
         };
     }
@@ -697,5 +886,32 @@ mod tests {
         assert_eq!(base64encode("1 AND 1=1"), "MSBBTkQgMT0x");
         assert_eq!(base64encode("AB"), "QUI=");
         assert_eq!(base64encode("A"), "QQ==");
+    }
+
+    #[test]
+    fn batch_30_to_42() {
+        assert_eq!(htmlencode("a'b"), "a&#x27;b");
+        assert_eq!(bluecoat("1 AND 1=1"), "1%09AND%091 LIKE 1");
+        assert_eq!(commalesslimit("x LIMIT 2,3"), "x LIMIT 3 OFFSET 2");
+        assert_eq!(commalesslimit("LIMIT 5"), "LIMIT 5");
+        assert_eq!(concat2concatws("CONCAT(a,b)"), "CONCAT_WS(MID(CHAR(0),0,0),a,b)");
+        assert_eq!(
+            ifnull2casewhenisnull("IFNULL(a,b)"),
+            "CASE WHEN ISNULL(a) THEN (b) ELSE (a) END"
+        );
+        assert_eq!(
+            ifnull2casewhenisnull("IFNULL(CAST(x AS INT),0)"),
+            "CASE WHEN ISNULL(CAST(x AS INT)) THEN (0) ELSE (CAST(x AS INT)) END"
+        );
+        assert_eq!(modsecurityversioned("p"), "/*!30000p*/");
+        assert_eq!(modsecurityzeroversioned("p"), "/*!00000p*/");
+        assert_eq!(unmagicquotes("a'b"), "a%bf%27b-- ");
+        assert_eq!(overlongutf8more("a'<>"), "a%C0%A7%C0%BC%C0%BE");
+        assert_eq!(versionedkeywords("aNd x"), "/*!AND*/ x");
+        assert_eq!(
+            informationschemacomment("FROM information_schema.tables"),
+            "FROM INFORMATION_SCHEMA/**/.tables"
+        );
+        assert_eq!(charunicodeencode("a'b"), "a%u0027b");
     }
 }
