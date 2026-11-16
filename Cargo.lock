@@ -660,6 +660,7 @@ dependencies = [
 name = "sqlmap-http"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "serde",
  "sqlmap-core",
  "ureq",

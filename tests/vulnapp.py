@@ -339,7 +339,20 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         params = dict(parse_qsl(u.query))
         page = NORMAL
-        if u.path == "/get":
+        if u.path == "/search":
+            page = (
+                "<html><body>"
+                '<form action="/item" method="get">'
+                '<input type="text" name="name" value="widget">'
+                '<input type="submit" value="Search">'
+                "</form>"
+                '<form action="/login" method="post">'
+                '<input type="text" name="user" value="admin">'
+                '<input type="password" name="pass">'
+                "</form>"
+                "</body></html>"
+            )
+        elif u.path == "/get":
             page = eval_value(unquote_plus(params.get("id", "1")))
         elif u.path == "/item":
             page = eval_value(unquote_plus(params.get("name", "widget")), quoted=True)

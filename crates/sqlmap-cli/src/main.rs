@@ -98,6 +98,10 @@ struct Args {
     /// Target table (sqlmap -T)
     #[arg(short = 'T', long)]
     table: Option<String>,
+
+    /// Parse and test target page's HTML forms (sqlmap --forms)
+    #[arg(long)]
+    forms: bool,
 }
 
 fn main() {
@@ -124,6 +128,7 @@ fn main() {
         dump: args.dump,
         target_db: args.db,
         target_table: args.table,
+        forms: args.forms,
         ..Config::default()
     };
 
@@ -133,8 +138,7 @@ fn main() {
     }
 
     let client = sqlmap_http::client::Client::new(&conf);
-    let engine = sqlmap_detection::Engine::new(&client, &conf);
-    let result = engine.scan();
+    let result = sqlmap_detection::forms_scan::scan_auto(&client, &conf);
 
     let kb = &result.kb;
     if args.json {

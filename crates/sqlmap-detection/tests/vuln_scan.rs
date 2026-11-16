@@ -208,3 +208,29 @@ fn clean_param_reports_nothing() {
     let kb = scan(&conf);
     assert!(kb.injections.is_empty());
 }
+
+#[test]
+fn forms_discovery_tests_each_form() {
+    // --forms on /search must test the GET form (-> /item name) and the POST
+    // form (-> /login user) and find both injections.
+    let app = VulnApp::start(8746);
+    let conf = Config {
+        target_url: app.url("/search"),
+        forms: true,
+        ..Config::default()
+    };
+    let client = Client::new(&conf);
+    let kb = sqlmap_detection::forms_scan::scan_auto(&client, &conf).kb;
+    assert!(
+        kb.injections
+            .iter()
+            .any(|i| i.parameter == "name" && i.place == sqlmap_core::config::Place::Get),
+        "GET form injection not found"
+    );
+    assert!(
+        kb.injections
+            .iter()
+            .any(|i| i.parameter == "user" && i.place == sqlmap_core::config::Place::Post),
+        "POST form injection not found"
+    );
+}

@@ -45,7 +45,7 @@ push.
 | sqlmap-rs crate | Upstream sqlmap | Status |
 |---|---|---|
 | `sqlmap-core` | `lib/core/{data,enums}.py`, conf/kb objects | ported (subset) |
-| `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py` | ported (subset) |
+| `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py`, forms parsing of `lib/core/target.py` | ported (subset); `--forms` discovery |
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 head entries) |
 | `sqlmap-tamper` | `tamper/*.py` | partial: 19 scripts |
@@ -59,7 +59,7 @@ push.
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
   the information_schema queries used by --dbs/--dump are MySQL-flavored)
 - The remaining ~50 tamper scripts, WAF identification, session persistence,
-  multi-target modes, crawling, forms auto-discovery, proxy support, threading
+  multi-target modes, crawling, proxy support, threading
 
 The boundary between ported and not-ported is enforced by the code: the engine
 skips unknown techniques/tampers with a log line rather than pretending.

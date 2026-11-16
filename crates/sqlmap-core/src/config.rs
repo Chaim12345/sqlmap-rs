@@ -70,6 +70,8 @@ pub struct Config {
     pub target_db: Option<String>,
     /// Target table (sqlmap -T).
     pub target_table: Option<String>,
+    /// Parse and test the target page's HTML forms (sqlmap --forms).
+    pub forms: bool,
 }
 
 impl Config {
@@ -109,6 +111,7 @@ impl Default for Config {
             dump: false,
             target_db: None,
             target_table: None,
+            forms: false,
         }
     }
 }
