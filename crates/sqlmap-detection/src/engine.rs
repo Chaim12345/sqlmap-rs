@@ -113,26 +113,28 @@ impl<'a> Engine<'a> {
         ScanResult { kb: self.kb, log: self.log }
     }
 
-    /// --dbs/--tables/--columns/--dump via blind inference on a confirmed
-    /// boolean injection (sqlmap `enumeration` phase over `inference`).
+    /// --dbs/--tables/--columns/--dump via the channel of a confirmed
+    /// injection (sqlmap `enumeration` phase): UNION echo when available,
+    /// otherwise blind inference - page-based for boolean findings, the
+    /// conditional-SLEEP vector for time/stacked/inline findings.
     fn run_enumeration(&mut self) {
         // Prefer the UNION channel when a union finding carries a column count
-        // (one request per value); fall back to boolean blind inference.
+        // (one request per value); fall back to blind inference.
         let union_inj = self
             .kb
             .injections
             .iter()
             .find(|i| i.technique == Technique::Union && i.column_count.is_some())
             .cloned();
-        let bool_inj = self
+        let blind_inj = self
             .kb
             .injections
             .iter()
-            .find(|i| i.technique == Technique::Boolean)
+            .find(|i| matches!(i.technique, Technique::Boolean | Technique::Time | Technique::Stacked | Technique::Inline))
             .cloned();
-        let Some((inj, via_union)) = union_inj.map(|i| (i, true)).or_else(|| bool_inj.map(|i| (i, false)))
+        let Some((inj, via_union)) = union_inj.map(|i| (i, true)).or_else(|| blind_inj.map(|i| (i, false)))
         else {
-            self.say("enumeration skipped: needs a boolean or UNION injection point; none found".to_string());
+            self.say("enumeration skipped: needs an injectable parameter; none found".to_string());
             return;
         };
         let all = params::extract_params(
@@ -172,6 +174,7 @@ impl<'a> Engine<'a> {
                     return;
                 }
             };
+            let signal = crate::exfil::infer_signal(inj.technique);
             let mut ext = crate::exfil::BlindExtractor::new(
                 self.client,
                 self.conf,
@@ -179,6 +182,7 @@ impl<'a> Engine<'a> {
                 inj,
                 filtered_page(&orig.body),
                 self.conf.page_ratio_threshold,
+                signal,
             );
             let results = ext.run();
             self.log.extend(ext.log);
@@ -564,7 +568,7 @@ enum DelayMode {
 
 /// Assemble an inline-query value: the rendered payload is the whole value
 /// (sqlmap inline_query.xml semantics), then the tamper chain.
-fn assemble_full(conf: &Config, log: &mut Vec<String>, payload_q: &str, seed: u64) -> String {
+pub(crate) fn assemble_full(conf: &Config, log: &mut Vec<String>, payload_q: &str, seed: u64) -> String {
     let rn = rand_num(seed);
     let rn1 = rand_num(seed.wrapping_mul(7).wrapping_add(1));
     let rs = rand_str(seed.wrapping_mul(13).wrapping_add(3));

@@ -300,6 +300,17 @@ def eval_value(value: str, quoted: bool = False, legacy: bool = False) -> str:
     m = re.search(r"UpdateXML\(1,\s*CONCAT\(0x7e,\s*([A-Za-z0-9]+)\),1\)", full, re.I)
     if m:
         return xpath_error(m.group(1))
+    # Time-based INFERENCE: SLEEP(n-(IF(<cond>,0,n))) sleeps only when the
+    # guard condition holds (sqlmap's time-based data-retrieval vector).
+    m = re.search(r"SLEEP\((\d+)-\(IF\(", full, re.I)
+    if m:
+        cond, _ = balanced(full, m.end() - 1)
+        if cond is not None:
+            guard = split_top_commas(cond)[0]
+            triples = exfil_conditions("AND " + guard)
+            if triples and all(compare(v, op, n2) for v, op, n2 in triples):
+                time.sleep(int(m.group(1)))
+        return NORMAL
     # Time-based: SLEEP(n) anywhere.
     m = re.search(r"SLEEP\((\d+)\)", full, re.I)
     if m:
@@ -471,7 +482,19 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def use_tiny_db():
+    """Shrink the fake DB for time-based inference tests: every true
+    condition costs a real second of sleep, so byte counts must stay tiny."""
+    global SCHEMATA, TABLES, COLUMNS, ROWS
+    SCHEMATA = ["shop"]
+    TABLES = {"shop": ["users"]}
+    COLUMNS = {("shop", "users"): ["id", "pw"]}
+    ROWS = {("shop", "users"): [("1", "x")]}
+
+
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8734
+    if len(sys.argv) > 2 and sys.argv[2] == "--tiny":
+        use_tiny_db()
     # Threaded so worker-pool concurrency tests measure real parallelism.
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
