@@ -144,6 +144,24 @@ fn tamper_chain_still_detects() {
 }
 
 #[test]
+fn union_probing_finds_column_count() {
+    let app = VulnApp::start(8747);
+    let conf = Config {
+        target_url: app.url("/get?id=1"),
+        techniques: vec![Technique::Union],
+        timeout: 15,
+        ..Config::default()
+    };
+    let kb = scan(&conf);
+    let inj = kb
+        .injections
+        .iter()
+        .find(|i| i.technique == Technique::Union)
+        .expect("expected union probing finding");
+    assert!(inj.note.contains("column count = 3"), "note: {}", inj.note);
+}
+
+#[test]
 fn clean_param_reports_nothing() {
     let app = VulnApp::start(8743);
     // /other has no params at all - engine must report no testables, not crash.

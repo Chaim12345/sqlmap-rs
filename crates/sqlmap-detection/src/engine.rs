@@ -195,6 +195,7 @@ impl<'a> Engine<'a> {
                 Technique::Boolean => self.check_boolean(param, &orig_page, &boundaries, dbms_hint.as_deref()),
                 Technique::Error => self.check_error(param, &boundaries, dbms_hint.as_deref()),
                 Technique::Time => self.check_time(param, baseline, &boundaries, dbms_hint.as_deref()),
+                Technique::Union => self.check_union(param, &orig_page, &boundaries, dbms_hint.as_deref()),
                 other => self.say(format!("  technique {other:?} not ported yet - skipped")),
             }
         }
@@ -316,6 +317,59 @@ impl<'a> Engine<'a> {
                         payload: val,
                         dbms: Some(dbms.to_string()),
                         note: format!("{dbms} error contained payload marker '{marker}'"),
+                    });
+                    return;
+                }
+            }
+        }
+    }
+
+    /// UNION-based, partial port: column-count discovery via ORDER BY probing
+    /// (the first half of sqlmap `unionTest`). Data exfiltration through UNION
+    /// SELECT is NOT ported; the finding records the column count only.
+    fn check_union(&mut self, param: &Param, orig_page: &str, boundaries: &[Boundary], dbms_hint: Option<&str>) {
+        let threshold = self.conf.page_ratio_threshold;
+        let comment_bounds: Vec<&Boundary> = boundaries
+            .iter()
+            .filter(|b| b.suffix.starts_with("--"))
+            .collect();
+        for boundary in comment_bounds {
+            let numeric_value = param.value.chars().all(|c| c.is_ascii_digit()) && !param.value.is_empty();
+            if numeric_value != (boundary.ptype == sqlmap_core::injection::PType::Numeric) {
+                continue;
+            }
+            let mut last_ok = 0u32;
+            let mut broke_at: Option<u32> = None;
+            for n in 1..=10u32 {
+                let q = format!(" ORDER BY {n}");
+                let val = self.assemble(param, boundary, &q, 7000 + n as u64);
+                let resp = match self.fetch(&self.build_request(param, &val)) {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+                if ratio(orig_page, &filtered_page(&resp.body)) >= threshold {
+                    last_ok = n;
+                } else {
+                    broke_at = Some(n);
+                    break;
+                }
+            }
+            // Need: n=1 similar (param accepts ORDER BY) and a clean break point.
+            match (last_ok, broke_at) {
+                (0, _) | (_, None) => continue, // n=1 already differed, or no break up to cap: not conclusive
+                (count, Some(_)) => {
+                    self.say(format!(
+                        "  INJECTABLE (union, partial): '{}' - column count = {count} via ORDER BY probing",
+                        param.name
+                    ));
+                    self.kb.add_injection(Injection {
+                        place: param.place,
+                        parameter: param.name.clone(),
+                        technique: Technique::Union,
+                        boundary: boundary.clone(),
+                        payload: format!("{} ORDER BY {count}{}", param.value, boundary.suffix),
+                        dbms: dbms_hint.map(|s| s.to_string()),
+                        note: format!("column count = {count} (ORDER BY probing); UNION data exfiltration not ported"),
                     });
                     return;
                 }

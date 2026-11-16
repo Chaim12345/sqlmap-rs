@@ -31,7 +31,7 @@ chain. `cargo test --workspace` runs everything; CI runs the same on every push.
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 head entries) |
 | `sqlmap-tamper` | `tamper/*.py` | partial: 6 scripts |
-| `sqlmap-detection` | `lib/controller/checks.py` | ported: boolean, error-based, time-based |
+| `sqlmap-detection` | `lib/controller/checks.py` | ported: boolean, error-based, time-based; union partial |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
 ### Deliberately not ported
@@ -40,7 +40,7 @@ chain. `cargo test --workspace` runs everything; CI runs the same on every push.
 - Takeover features (`--os-shell`, `--os-pwn`, file read/write)
 - Stacked-queries and inline-query techniques
 - User-Agent/Referer/header injection places (sqlmap level 3+)
-- UNION technique (column-count probing planned)
+- UNION data exfiltration (column-count probing via ORDER BY IS ported; the finding reports the column count, but no UNION SELECT data retrieval)
 - The remaining ~60 tamper scripts, WAF identification, session persistence,
   multi-target modes, crawling, forms auto-discovery, proxy support, threading
 

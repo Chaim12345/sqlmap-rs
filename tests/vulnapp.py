@@ -36,26 +36,48 @@ def xpath_error(marker: str) -> str:
     )
 
 
-def eval_value(value: str) -> str:
-    """Decide the page for an injected parameter value."""
-    # MySQL treats /**/ as whitespace (tamper space2comment); keywords are
-    # case-insensitive (tamper randomcase) - our regexes below are already re.I.
+def eval_value(value: str, quoted: bool = False) -> str:
+    """Decide the page for an injected parameter value.
+
+    Emulates a real query template: the app wraps string params in quotes,
+    and "-- " comments out the remainder of the statement.
+    """
     value = value.replace("/**/", " ")
+    full = ("'" + value + "'") if quoted else value
+    m = re.search(r"--\s", full)
+    if m:
+        full = full[: m.start()]
     # Error-based: ExtractValue(1,CONCAT(0x7e,<marker>)) echoes the marker.
-    m = re.search(r"ExtractValue\(1,\s*CONCAT\(0x7e,\s*([A-Za-z0-9]+)\)\)", value, re.I)
+    m = re.search(r"ExtractValue\(1,\s*CONCAT\(0x7e,\s*([A-Za-z0-9]+)\)\)", full, re.I)
     if m:
         return xpath_error(m.group(1))
-    # Unbalanced quotes -> syntax error echoing the tail of the value.
-    if value.count("'") % 2 == 1 or value.count('"') % 2 == 1:
-        return mysql_error(value[-12:])
     # Time-based: SLEEP(n) anywhere.
-    m = re.search(r"SLEEP\((\d+)\)", value, re.I)
+    m = re.search(r"SLEEP\((\d+)\)", full, re.I)
     if m:
         time.sleep(int(m.group(1)))
         return NORMAL
+    # UNION probing: ORDER BY n fails for n beyond the table's 3 columns.
+    m = re.search(r"ORDER\s+BY\s+(\d+)", full, re.I)
+    if m:
+        n = int(m.group(1))
+        if n > 3:
+            return mysql_error("Unknown column '%d' in 'order clause'" % n)
+        return NORMAL
+    # Quote balance with '' as an escaped quote inside strings.
+    in_str = False
+    i = 0
+    while i < len(full):
+        if full[i] == "'":
+            if in_str and i + 1 < len(full) and full[i + 1] == "'":
+                i += 2
+                continue
+            in_str = not in_str
+        i += 1
+    if in_str or full.count('"') % 2 == 1:
+        return mysql_error(full[-12:])
     # Boolean: every AND <a>=<b> (numeric or quoted) must hold.
-    conds = re.findall(r"AND\s+(\d+)\s*=\s*(\d+)", value, re.I)
-    conds += re.findall(r"AND\s*'([^']*)'\s*=\s*'([^']*)", value, re.I)
+    conds = re.findall(r"AND\s+(\d+)\s*=\s*(\d+)", full, re.I)
+    conds += re.findall(r"AND\s*'([^']*)'\s*=\s*'([^']*)", full, re.I)
     if conds:
         return NORMAL if all(a == b for a, b in conds) else EMPTY
     return NORMAL
@@ -69,12 +91,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/get":
             page = eval_value(unquote_plus(params.get("id", "1")))
         elif u.path == "/item":
-            page = eval_value(unquote_plus(params.get("name", "widget")))
+            page = eval_value(unquote_plus(params.get("name", "widget")), quoted=True)
         elif u.path == "/session":
             cookies = dict(
                 c.strip().split("=", 1) for c in (self.headers.get("Cookie") or "").split(";") if "=" in c
             )
-            page = eval_value(unquote_plus(cookies.get("sid", "abc123")))
+            page = eval_value(unquote_plus(cookies.get("sid", "abc123")), quoted=True)
         body = page.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
@@ -91,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
         params = dict(parse_qsl(body))
         page = NORMAL
         if u.path == "/login":
-            page = eval_value(unquote_plus(params.get("user", "admin")))
+            page = eval_value(unquote_plus(params.get("user", "admin")), quoted=True)
         out = page.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
