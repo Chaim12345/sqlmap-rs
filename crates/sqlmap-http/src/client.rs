@@ -50,10 +50,12 @@ impl Client {
     pub fn new(conf: &Config) -> Self {
         let mut builder = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(conf.timeout.max(1)))
-            .https_only(false);
-        if !conf.follow_redirects {
-            builder = builder.redirects(0);
-        }
+            .https_only(false)
+            // Redirects are followed manually in request() with a strict
+            // same-origin check: ureq's auto-follow carries the request's
+            // headers (session cookies included) to any Location target,
+            // which would let a redirect move credentials off-origin.
+            .redirects(0);
         let mut proxy_auth = None;
         if let Some(proxy) = &conf.proxy {
             // Fail loudly: silently dropping --proxy would leak requests the
@@ -146,10 +148,49 @@ impl Client {
         )
     }
 
+    /// Fire one request, following redirects manually when enabled.
+    /// Unlike ureq's auto-follow, a redirect is only followed while the
+    /// Location target stays on the exact same origin (scheme://host:port)
+    /// as the URL being redirected: our requests carry session credentials
+    /// (Cookie header), and those must never be forwarded off-origin.
+    pub fn request(&self, spec: &RequestSpec) -> Result<Response, String> {
+        let mut current = spec.clone();
+        let mut resp = self.fire(&current)?;
+        for _ in 0..MAX_REDIRECTS {
+            if !self.follow_redirects || !matches!(resp.status, 301 | 302 | 303 | 307 | 308) {
+                return Ok(resp);
+            }
+            let location = resp
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("location"))
+                .map(|(_, v)| v.clone());
+            let Some(location) = location else { return Ok(resp) };
+            let next = match resolve_location(&current.url, &location) {
+                Some(u) => u,
+                None => return Ok(resp),
+            };
+            // Strict origin boundary: a redirect that would leave the
+            // origin is returned to the caller unfollowed.
+            if crate::crawl::origin(&next) != crate::crawl::origin(&current.url) {
+                return Ok(resp);
+            }
+            current.url = next;
+            // 301/302/303 rewrite to GET (browser and urllib2 behavior);
+            // 307/308 preserve method and body.
+            if matches!(resp.status, 301 | 302 | 303) {
+                current.method = "GET".to_string();
+                current.body = None;
+            }
+            resp = self.fire(&current)?;
+        }
+        Ok(resp)
+    }
+
     /// True when the server held the connection past `time_sec` (server-side sleep).
     /// sqlmap distinguishes a deliberate SLEEP from a slow network by comparing
     /// against the original page's baseline response time.
-    pub fn request(&self, spec: &RequestSpec) -> Result<Response, String> {
+    fn fire(&self, spec: &RequestSpec) -> Result<Response, String> {
         let started = Instant::now();
         let mut req = match spec.method.to_ascii_uppercase().as_str() {
             "POST" => self.agent.post(&spec.url),
@@ -159,8 +200,10 @@ impl Client {
             _ => self.agent.get(&spec.url),
         };
         req = req.set("User-Agent", &self.user_agent);
-        if let Some(h) = &self.proxy_auth {
-            req = req.set("Proxy-Authorization", h);
+        if spec.url.starts_with("http://") {
+            if let Some(h) = &self.proxy_auth {
+                req = req.set("Proxy-Authorization", h);
+            }
         }
         for (k, v) in &self.tamper_headers {
             req = req.set(k, v);
@@ -202,6 +245,33 @@ impl Client {
     pub fn follow_redirects(&self) -> bool {
         self.follow_redirects
     }
+}
+
+/// Maximum redirect hops followed manually (matches ureq's default of 10).
+const MAX_REDIRECTS: usize = 10;
+
+/// Resolve a Location header against the URL that produced it. Absolute
+/// URLs pass through; root-relative and path-relative locations resolve
+/// against the request URL. Anything unparseable returns None (not followed).
+fn resolve_location(base: &str, location: &str) -> Option<String> {
+    let location = location.trim();
+    if location.is_empty() {
+        return None;
+    }
+    if location.contains("://") {
+        return Some(location.to_string());
+    }
+    let origin_end = base.find("://").map(|i| {
+        let rest = &base[i + 3..];
+        rest.find('/').map(|j| i + 3 + j).unwrap_or(base.len())
+    })?;
+    if let Some(path) = location.strip_prefix('/') {
+        let _ = path;
+        return Some(format!("{}{}", &base[..origin_end], location));
+    }
+    // path-relative: replace the last path segment of the base
+    let up_to_slash = base[..base.find('?').unwrap_or(base.len())].rfind('/')?;
+    Some(format!("{}{}", &base[..up_to_slash + 1], location))
 }
 
 fn read_response(resp: ureq::Response, elapsed: Duration) -> Response {

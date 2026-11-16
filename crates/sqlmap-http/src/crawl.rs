@@ -30,9 +30,13 @@ pub struct CrawledPage {
 
 /// scheme://authority of a URL - the boundary the crawl never crosses
 /// (sqlmap's crawler is likewise restricted to the target host).
-/// sqlmap checkSameHost (lib/core/common.py): hostnames compare equal after
-/// stripping a leading "www." (case-insensitive); scheme and port do not
-/// participate. A URL without a scheme is treated as http.
+/// Port of sqlmap's checkSameHost (lib/core/common.py) for upstream-suite
+/// compatibility ONLY: hostnames compare equal after stripping a leading
+/// "www." (case-insensitive); scheme and port do not participate.
+///
+/// This is NOT a crawl-scope or authorization decision. The crawler stays
+/// on the exact start origin (scheme://host:port) via origin() below;
+/// do not use this helper to decide which URLs may be fetched.
 pub fn same_host(a: &str, b: &str) -> bool {
     fn host(url: &str) -> String {
         let rest = match url.find("://") {
@@ -45,7 +49,7 @@ pub fn same_host(a: &str, b: &str) -> bool {
     !a.is_empty() && !b.is_empty() && host(a) == host(b)
 }
 
-fn origin(url: &str) -> &str {
+pub(crate) fn origin(url: &str) -> &str {
     match url.find("://") {
         Some(i) => {
             let rest = &url[i + 3..];
@@ -109,7 +113,8 @@ pub fn extract_links(html: &str, page_url: &str) -> Vec<String> {
 pub fn crawl(client: &Client, start_url: &str, max_depth: u8, threads: usize) -> Vec<CrawledPage> {
     let start = start_url.split('#').next().unwrap_or(start_url).to_string();
     let mut seen: HashSet<String> = HashSet::from([start.clone()]);
-    let mut frontier: Vec<(String, u8)> = vec![(start.clone(), 0)];
+    let home = origin(&start).to_string();
+    let mut frontier: Vec<(String, u8)> = vec![(start, 0)];
     let mut pages = Vec::new();
     while !frontier.is_empty() {
         let specs: Vec<RequestSpec> = frontier
@@ -128,7 +133,7 @@ pub fn crawl(client: &Client, start_url: &str, max_depth: u8, threads: usize) ->
             let Ok(resp) = resp else { continue };
             if depth < max_depth {
                 for link in extract_links(&resp.body, &url) {
-                    if is_static_resource(&link) || !same_host(&link, &start) {
+                    if is_static_resource(&link) || origin(&link) != home {
                         continue;
                     }
                     if seen.insert(link.clone()) {
