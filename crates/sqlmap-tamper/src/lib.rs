@@ -1,5 +1,11 @@
 //! Tamper/evasion transformations (port of sqlmap `tamper/*.py`, subset).
 //!
+//! Upstream scripts deliberately not ported, with reasons:
+//! - greatest, plus2concat, plus2fnconcat: rewrite comparison/concatenation
+//!   expressions and need real SQL expression parsing to stay faithful;
+//! - securesphere: upstream behavior is a fixed opaque suffix string whose
+//!   exact form we could not verify from this environment.
+//!
 //! Each function mirrors one upstream tamper script's `tamper()` logic,
 //! applied to the assembled payload string before it is placed into the
 //! request. sqlmap applies tampers after payload/boundary assembly; so do we.
@@ -658,8 +664,89 @@ pub fn header_mutations(names: &[String], seed: u64) -> Vec<(String, String)> {
     out
 }
 
+
+/// tamper/commalessmid.py (MySQL): MID(A,B,C) -> MID(A FROM B FOR C).
+pub fn commalessmid(payload: &str) -> String {
+    let upper = payload.to_ascii_uppercase();
+    let Some(pos) = upper.find("MID(") else {
+        return payload.to_string();
+    };
+    let start = pos + 4;
+    let mut depth = 1;
+    let mut end = payload.len();
+    for (i, c) in payload[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return payload.to_string();
+    }
+    let inner = &payload[start..end];
+    let Some((a, rest)) = split_top_level(inner) else {
+        return payload.to_string();
+    };
+    let Some((b, c)) = split_top_level(rest) else {
+        return payload.to_string();
+    };
+    format!("{}MID({} FROM {} FOR {}){}", &payload[..pos], a, b, c, &payload[end + 1..])
+}
+
+/// tamper/hex2char.py: 0xABCD hex literals -> CHAR(0xAB,0xCD,...) (MySQL).
+pub fn hex2char(payload: &str) -> String {
+    let b = payload.as_bytes();
+    let mut out = String::with_capacity(payload.len());
+    let mut i = 0;
+    while i < b.len() {
+        let is_start = b[i] == b'0'
+            && i + 1 < b.len()
+            && (b[i + 1] == b'x' || b[i + 1] == b'X')
+            && (i == 0 || !b[i - 1].is_ascii_alphanumeric());
+        if is_start {
+            let mut j = i + 2;
+            while j < b.len() && b[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            let digits = j - (i + 2);
+            if digits >= 2 && digits % 2 == 0 && (j == b.len() || !b[j].is_ascii_alphanumeric()) {
+                let bytes: Vec<String> = payload[i..j]
+                    .chars()
+                    .skip(2)
+                    .collect::<Vec<char>>()
+                    .chunks(2)
+                    .map(|c| format!("0x{}{}", c[0], c[1]))
+                    .collect();
+                out.push_str(&format!("CHAR({})", bytes.join(",")));
+                i = j;
+                continue;
+            }
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// tamper/hexentities.py: EVERY char -> &#xNN; (htmlencode covers only
+/// non-alphanumerics; this one hides letters too).
+pub fn hexentities(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len() * 6);
+    for c in payload.chars() {
+        out.push_str(&format!("&#x{:02X};", c as u32));
+    }
+    out
+}
+
 /// Names understood by the engine (sqlmap --tamper values).
-pub const AVAILABLE: [&str; 42] = [
+pub const AVAILABLE: [&str; 45] = [
     "space2comment",
     "space2plus",
     "space2hash",
@@ -702,6 +789,9 @@ pub const AVAILABLE: [&str; 42] = [
     "versionedkeywords",
     "informationschemacomment",
     "charunicodeencode",
+    "commalessmid",
+    "hex2char",
+    "hexentities",
 ];
 
 /// Apply named tampers in order (sqlmap applies them in the order given).
@@ -752,6 +842,9 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
             "versionedkeywords" => versionedkeywords(&out),
             "informationschemacomment" => informationschemacomment(&out),
             "charunicodeencode" => charunicodeencode(&out),
+            "commalessmid" => commalessmid(&out),
+            "hex2char" => hex2char(&out),
+            "hexentities" => hexentities(&out),
             // Header tampers mutate headers, not the payload.
             n if HEADER_TAMPERS.contains(&n) => out,
             other => return Err(format!("unknown tamper script: {other} (available: {AVAILABLE:?})")),
@@ -960,5 +1053,18 @@ mod tests {
             apply_all(&names, "1 AND 1=1", 7).unwrap(),
             "1 AND 1=1"
         );
+    }
+
+    #[test]
+    fn batch_42_to_45() {
+        assert_eq!(commalessmid("MID(abc,1,2)"), "MID(abc FROM 1 FOR 2)");
+        assert_eq!(commalessmid("MID(a,(1+1),2)"), "MID(a FROM (1+1) FOR 2)");
+        assert_eq!(commalessmid("no mid here"), "no mid here");
+        assert_eq!(hex2char("x=0x4142"), "x=CHAR(0x41,0x42)");
+        assert_eq!(hex2char("0x41"), "CHAR(0x41)");
+        // odd digit counts and identifier-adjacent tokens are left alone
+        assert_eq!(hex2char("a0x41"), "a0x41");
+        assert_eq!(hex2char("0x4"), "0x4");
+        assert_eq!(hexentities("a'b"), "&#x61;&#x27;&#x62;");
     }
 }
