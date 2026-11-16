@@ -60,6 +60,7 @@ fn enumerates_databases_blind() {
     let conf = Config {
         target_url: app.url("/get?id=1"),
         enum_dbs: true,
+        techniques: vec![Technique::Boolean],
         ..Config::default()
     };
     let kb = scan(&conf);
@@ -81,6 +82,7 @@ fn enumerates_tables_for_database() {
         target_url: app.url("/get?id=1"),
         enum_tables: true,
         target_db: Some("shop".into()),
+        techniques: vec![Technique::Boolean],
         ..Config::default()
     };
     let kb = scan(&conf);
@@ -99,6 +101,7 @@ fn enumerates_columns_and_dumps_table() {
         dump: true,
         target_db: Some("shop".into()),
         target_table: Some("users".into()),
+        techniques: vec![Technique::Boolean],
         ..Config::default()
     };
     let kb = scan(&conf);
@@ -127,11 +130,62 @@ fn enumerates_through_string_param() {
     let conf = Config {
         target_url: app.url("/item?name=widget"),
         enum_dbs: true,
+        techniques: vec![Technique::Boolean],
         ..Config::default()
     };
     let kb = scan(&conf);
     assert_eq!(
         kb.enumeration.databases,
         vec!["information_schema", "mysql", "shop"],
+    );
+}
+
+#[test]
+fn union_channel_enumerates_databases() {
+    // Default technique set includes UNION; the engine must prefer the UNION
+    // channel (one request per value) over blind inference.
+    let app = VulnApp::start(8755);
+    let conf = Config {
+        target_url: app.url("/get?id=1"),
+        enum_dbs: true,
+        ..Config::default()
+    };
+    let kb = scan(&conf);
+    assert!(
+        kb.injections
+            .iter()
+            .any(|i| i.technique == Technique::Union && i.column_count == Some(3)),
+        "UNION finding with column count required"
+    );
+    assert_eq!(
+        kb.enumeration.databases,
+        vec!["information_schema", "mysql", "shop"],
+        "UNION channel must recover the schema list"
+    );
+}
+
+#[test]
+fn union_channel_dumps_table() {
+    let app = VulnApp::start(8756);
+    let conf = Config {
+        target_url: app.url("/get?id=1"),
+        enum_columns: true,
+        dump: true,
+        target_db: Some("shop".into()),
+        target_table: Some("users".into()),
+        ..Config::default()
+    };
+    let kb = scan(&conf);
+    assert_eq!(kb.enumeration.dumps.len(), 1);
+    let dump = &kb.enumeration.dumps[0];
+    assert_eq!(dump.columns, vec!["id", "username", "password"]);
+    assert_eq!(
+        dump.rows,
+        vec![
+            vec!["1", "admin", "s3cr3t-pass"],
+            vec!["2", "alice", "hunter2"],
+            vec!["3", "bob", "qwerty"],
+        ],
+        "UNION channel must recover every row"
     );
 }

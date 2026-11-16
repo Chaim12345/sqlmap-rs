@@ -12,8 +12,10 @@ detection logic goes to the sqlmap authors and contributors. See LICENSE.
 
 Detects SQL injection on a target URL using the three core blind/error techniques
 plus UNION column-count probing, with automatic MySQL/PostgreSQL/MSSQL/Oracle/SQLite
-error-based fingerprinting. Once a boolean-based injection is found, it enumerates
-and dumps data through blind inference (sqlmap's bisection oracle):
+error-based fingerprinting. Once an injection is found, it enumerates and dumps data through
+the fastest confirmed channel: UNION SELECT echo when a UNION injection was
+confirmed (one request per value), otherwise blind inference (sqlmap's
+bisection oracle):
 
 ```
 # find the injection
@@ -34,8 +36,9 @@ app (`tests/vulnapp.py`, a MySQL emulator holding a fake in-memory database) and
 confirm: real detection on numeric (GET), string (GET), POST-body, Cookie and
 User-Agent (level >= 3) parameters, including through a tamper chain; and
 byte-for-byte recovery of databases, tables, columns and full table dumps via
-blind inference. `--json` emits findings as JSON. `cargo test --workspace` runs
-everything; CI runs the same on every push.
+BOTH exfil channels (UNION echo and blind inference). `--json` emits findings
+as JSON. `cargo test --workspace` runs everything; CI runs the same on every
+push.
 
 ### Module map
 
@@ -46,13 +49,11 @@ everything; CI runs the same on every push.
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 head entries) |
 | `sqlmap-tamper` | `tamper/*.py` | partial: 10 scripts |
-| `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py` | ported: boolean, error-based, time-based; union partial; blind exfiltration (`--dbs/--tables/--columns/--dump`) |
+| `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py`, `lib/techniques/union/use.py` | ported: boolean, error-based, time-based; UNION (column probing + data retrieval); exfiltration `--dbs/--tables/--columns/--dump` over both channels |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
 ### Deliberately not ported
 
-- UNION SELECT data retrieval (column-count probing via ORDER BY IS ported, and
-  enumeration works through blind inference; the faster UNION exfil channel is not)
 - DNS exfiltration, takeover features (`--os-shell`, `--os-pwn`, file read/write)
 - Stacked-queries and inline-query techniques
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
@@ -76,6 +77,9 @@ skips unknown techniques/tampers with a log line rather than pretending.
 - Blind inference uses sqlmap's bisection semantics (`expr > mid` probes with a
   final equality confirmation per character); string literals in enumeration
   queries are hex-encoded (0x...) like upstream, so string boundaries stay intact.
+- UNION exfiltration probes each SELECT-list position with a delimited constant
+  to find the reflected column, then rides values back inside `CONCAT(marker,
+  (scalar), marker)` - the same echo contract as upstream's `unionUse`.
 
 ## Development
 

@@ -84,6 +84,15 @@ def eval_scalar(q):
     """Evaluate the fixed set of subqueries the port issues for enumeration
     against the fake in-memory DB. Returns str/int, or None if unrecognized."""
     q = re.sub(r"\s+", " ", q.strip())
+    m = re.fullmatch(r"SELECT GROUP_CONCAT\(schema_name SEPARATOR 0x3a\) FROM information_schema\.schemata", q, re.I)
+    if m:
+        return ":".join(SCHEMATA)
+    m = re.fullmatch(r"SELECT GROUP_CONCAT\(table_name SEPARATOR 0x3a\) FROM information_schema\.tables WHERE table_schema=(\S+)", q, re.I)
+    if m:
+        return ":".join(TABLES.get(name_token(m.group(1)), []))
+    m = re.fullmatch(r"SELECT GROUP_CONCAT\(column_name SEPARATOR 0x3a\) FROM information_schema\.columns WHERE table_schema=(\S+) AND table_name=(\S+)", q, re.I)
+    if m:
+        return ":".join(COLUMNS.get((name_token(m.group(1)), name_token(m.group(2))), []))
     if re.fullmatch(r"SELECT COUNT\(schema_name\) FROM information_schema\.schemata", q, re.I):
         return len(SCHEMATA)
     m = re.fullmatch(r"SELECT schema_name FROM information_schema\.schemata LIMIT (\d+),1", q, re.I)
@@ -175,6 +184,64 @@ def exfil_conditions(full):
     return out
 
 
+def split_top_commas(s):
+    """Split on commas at paren depth 0."""
+    parts, depth, cur = [], 0, ""
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return parts
+
+
+def eval_union_item(item):
+    """Evaluate one UNION SELECT list item against the fake DB.
+    Returns the rendered cell text, or None when unrecognized."""
+    item = item.strip()
+    if re.fullmatch(r"NULL", item, re.I):
+        return ""
+    if re.fullmatch(r"\d+", item):
+        return item
+    m = re.fullmatch(r"CONCAT\((.*)\)", item, re.I | re.S)
+    if m:
+        out = ""
+        for part in split_top_commas(m.group(1)):
+            part = part.strip()
+            if re.fullmatch(r"0x[0-9a-fA-F]+", part):
+                out += bytes.fromhex(part[2:]).decode("utf-8", "replace")
+            elif part.startswith("("):
+                scalar, _ = balanced(part, 0)
+                if scalar is None:
+                    return None
+                v = eval_scalar(scalar)
+                out += "" if v is None else str(v)
+            else:
+                return None
+        return out
+    if item.startswith("("):
+        scalar, _ = balanced(item, 0)
+        if scalar is None:
+            return None
+        v = eval_scalar(scalar)
+        return None if v is None else str(v)
+    return None
+
+
+def union_page(vals):
+    """The injected UNION row rendered the way the app renders table rows."""
+    return (
+        "<html><body><h1>Item " + vals[0] + "</h1><p>" + vals[1] +
+        " - in stock: " + vals[2] + "</p></body></html>"
+    )
+
+
 def compare(value, op, num):
     if op == ">":
         return value > num
@@ -208,6 +275,17 @@ def eval_value(value: str, quoted: bool = False) -> str:
     if m:
         time.sleep(int(m.group(1)))
         return NORMAL
+    # UNION SELECT: the emulated table has 3 columns; the injected row is
+    # rendered through the app's row template.
+    m = re.search(r"UNION\s+(ALL\s+)?SELECT\s", full, re.I)
+    if m:
+        items = split_top_commas(full[m.end():])
+        if len(items) != 3:
+            return mysql_error("The used SELECT statements have a different number of columns")
+        vals = [eval_union_item(it) for it in items]
+        if any(v is None for v in vals):
+            return mysql_error("Illegal mix of collations for operation 'UNION'")
+        return union_page(vals)
     # UNION probing: ORDER BY n fails for n beyond the table's 3 columns.
     m = re.search(r"ORDER\s+BY\s+(\d+)", full, re.I)
     if m:

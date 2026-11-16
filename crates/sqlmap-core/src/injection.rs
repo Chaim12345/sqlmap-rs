@@ -39,4 +39,7 @@ pub struct Injection {
     pub dbms: Option<String>,
     /// Evidence note (e.g. matched error text, observed delay).
     pub note: String,
+    /// For UNION-technique findings: the probed column count (drives UNION exfil).
+    #[serde(default)]
+    pub column_count: Option<u32>,
 }

