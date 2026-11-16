@@ -63,6 +63,8 @@ impl Client {
             _ => self.agent.get(&spec.url),
         };
         req = req.set("User-Agent", &self.user_agent);
+        // Note: applied before spec.headers so a User-Agent entry there wins
+        // (level>=3 header-place injection).
         for (k, v) in &spec.headers {
             req = req.set(k, v);
         }

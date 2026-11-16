@@ -19,8 +19,8 @@ cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --technique BET
 
 Verified end-to-end by integration tests that spawn a local deliberately-vulnerable
 app (`tests/vulnapp.py`, a MySQL emulator) and confirm real detection on numeric
-(GET), string (GET), POST-body and Cookie parameters, including through a tamper
-chain. `cargo test --workspace` runs everything; CI runs the same on every push.
+(GET), string (GET), POST-body, Cookie and User-Agent (level >= 3) parameters,
+including through a tamper chain. `--json` emits findings as JSON. `cargo test --workspace` runs everything; CI runs the same on every push.
 
 ### Module map
 
@@ -30,7 +30,7 @@ chain. `cargo test --workspace` runs everything; CI runs the same on every push.
 | `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py` | ported (subset) |
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 head entries) |
-| `sqlmap-tamper` | `tamper/*.py` | partial: 6 scripts |
+| `sqlmap-tamper` | `tamper/*.py` | partial: 10 scripts |
 | `sqlmap-detection` | `lib/controller/checks.py` | ported: boolean, error-based, time-based; union partial |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
@@ -39,7 +39,6 @@ chain. `cargo test --workspace` runs everything; CI runs the same on every push.
 - Data exfiltration (`--dump`, UNION query data retrieval, DNS exfiltration)
 - Takeover features (`--os-shell`, `--os-pwn`, file read/write)
 - Stacked-queries and inline-query techniques
-- User-Agent/Referer/header injection places (sqlmap level 3+)
 - UNION data exfiltration (column-count probing via ORDER BY IS ported; the finding reports the column count, but no UNION SELECT data retrieval)
 - The remaining ~60 tamper scripts, WAF identification, session persistence,
   multi-target modes, crawling, forms auto-discovery, proxy support, threading

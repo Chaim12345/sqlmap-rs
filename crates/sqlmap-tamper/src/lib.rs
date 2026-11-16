@@ -94,14 +94,78 @@ pub fn charencode(payload: &str) -> String {
     out
 }
 
+/// tamper/space2hash.py: space -> %23<RAND>%0A (MySQL # comment + newline,
+/// which MySQL treats as whitespace after URL decoding).
+pub fn space2hash(payload: &str, rng: &mut Rng) -> String {
+    let mut out = String::with_capacity(payload.len() * 2);
+    for c in payload.chars() {
+        if c == ' ' {
+            let n = (rng.next() % 9000 + 1000) as u32;
+            out.push_str(&format!("%23{n}%0A"));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// tamper/apostrophemask.py: ' -> its UTF-8 fullwidth equivalent %EF%BC%87.
+pub fn apostrophemask(payload: &str) -> String {
+    payload.replace('\'', "%EF%BC%87")
+}
+
+/// tamper/chardoubleencode.py: double URL-encode every character.
+pub fn chardoubleencode(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len() * 5);
+    for b in payload.bytes() {
+        out.push_str(&format!("%25{:02X}", b));
+    }
+    out
+}
+
+/// tamper/halfversionedmorekeywords.py (MySQL-specific): wrap each SQL keyword
+/// in its versioned comment form /*!0<KEYWORD>, e.g. AND -> /*!0AND.
+pub fn halfversionedmorekeywords(payload: &str) -> String {
+    const KEYWORDS: [&str; 8] = ["AND", "OR", "SELECT", "WHERE", "UNION", "ORDER", "BY", "SLEEP"];
+    let mut out = payload.to_string();
+    for kw in KEYWORDS {
+        // Case-insensitive word-boundary replacement, preserving nothing else.
+        let mut res = String::with_capacity(out.len());
+        let upper = out.to_ascii_uppercase();
+        let bytes = upper.as_bytes();
+        let kbytes = kw.as_bytes();
+        let mut i = 0;
+        let src: Vec<char> = out.chars().collect();
+        while i < bytes.len() {
+            let at_word_start = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+            if at_word_start
+                && bytes[i..].starts_with(kbytes)
+                && (i + kbytes.len() >= bytes.len() || !bytes[i + kbytes.len()].is_ascii_alphanumeric())
+            {
+                res.push_str(&format!("/*!0{}", &src[i..i + kbytes.len()].iter().collect::<String>()));
+                i += kbytes.len();
+            } else {
+                res.push(src[i]);
+                i += 1;
+            }
+        }
+        out = res;
+    }
+    out
+}
+
 /// Names understood by the engine (sqlmap --tamper values).
-pub const AVAILABLE: [&str; 6] = [
+pub const AVAILABLE: [&str; 10] = [
     "space2comment",
     "space2plus",
+    "space2hash",
     "randomcase",
     "between",
     "equaltolike",
     "charencode",
+    "chardoubleencode",
+    "apostrophemask",
+    "halfversionedmorekeywords",
 ];
 
 /// Apply named tampers in order (sqlmap applies them in the order given).
@@ -116,6 +180,10 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
             "between" => between(&out),
             "equaltolike" => equaltolike(&out),
             "charencode" => charencode(&out),
+            "space2hash" => space2hash(&out, &mut rng),
+            "chardoubleencode" => chardoubleencode(&out),
+            "apostrophemask" => apostrophemask(&out),
+            "halfversionedmorekeywords" => halfversionedmorekeywords(&out),
             other => return Err(format!("unknown tamper script: {other} (available: {AVAILABLE:?})")),
         };
     }
@@ -153,6 +221,29 @@ mod tests {
     #[test]
     fn between_swaps_operators() {
         assert_eq!(between("1=1"), "1 BETWEEN 0 AND 1");
+    }
+
+    #[test]
+    fn space2hash_shape() {
+        let out = space2hash("1 AND 1=1", &mut Rng::new(7));
+        assert!(out.starts_with("1%23"));
+        assert!(out.contains("%0AAND%23"));
+    }
+
+    #[test]
+    fn apostrophemask_replaces() {
+        assert_eq!(apostrophemask("a'b"), "a%EF%BC%87b");
+    }
+
+    #[test]
+    fn chardoubleencode_double_encodes() {
+        assert_eq!(chardoubleencode("A="), "%2541%253D");
+    }
+
+    #[test]
+    fn halfversioned_wraps_keywords_only() {
+        assert_eq!(halfversionedmorekeywords("1 AND 1=1"), "1 /*!0AND 1=1");
+        assert_eq!(halfversionedmorekeywords("CANDY"), "CANDY");
     }
 
     #[test]

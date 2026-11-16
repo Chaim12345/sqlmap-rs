@@ -43,6 +43,7 @@ def eval_value(value: str, quoted: bool = False) -> str:
     and "-- " comments out the remainder of the statement.
     """
     value = value.replace("/**/", " ")
+    value = re.sub(r"#[^\n]*\n", " ", value)  # MySQL '#' comment (tamper space2hash)
     full = ("'" + value + "'") if quoted else value
     m = re.search(r"--\s", full)
     if m:
@@ -92,6 +93,8 @@ class Handler(BaseHTTPRequestHandler):
             page = eval_value(unquote_plus(params.get("id", "1")))
         elif u.path == "/item":
             page = eval_value(unquote_plus(params.get("name", "widget")), quoted=True)
+        elif u.path == "/track":
+            page = eval_value(unquote_plus(self.headers.get("User-Agent", "")), quoted=True)
         elif u.path == "/session":
             cookies = dict(
                 c.strip().split("=", 1) for c in (self.headers.get("Cookie") or "").split(";") if "=" in c

@@ -109,14 +109,15 @@ impl<'a> Engine<'a> {
                     cookie: Some(cookie),
                 }
             }
-            // UA/Referer/header places: level>=3 territory, not yet wired.
-            other => {
-                let _ = other;
+            Place::UserAgent | Place::Referer | Place::CustomHeader => {
+                let mut headers = parse_headers(&self.conf.headers);
+                headers.retain(|(k, _)| !k.eq_ignore_ascii_case(&param.name));
+                headers.push((param.name.clone(), new_value.to_string()));
                 RequestSpec {
                     url: self.conf.target_url.clone(),
-                    method: "GET".into(),
+                    method: if self.conf.data.is_some() { "POST".into() } else { "GET".into() },
                     body: self.conf.data.clone(),
-                    headers: parse_headers(&self.conf.headers),
+                    headers,
                     cookie: self.conf.cookie.clone(),
                 }
             }
@@ -139,6 +140,19 @@ impl<'a> Engine<'a> {
         }
         if let Some(skip) = &self.conf.skip_param {
             all.retain(|p| p.name != *skip);
+        }
+        // sqlmap level >= 3 adds User-Agent and Referer as injection places.
+        if self.conf.level >= 3 {
+            all.push(Param {
+                place: Place::UserAgent,
+                name: "User-Agent".into(),
+                value: self.conf.user_agent.clone().unwrap_or_else(|| "sqlmap-rs".into()),
+            });
+            all.push(Param {
+                place: Place::Referer,
+                name: "Referer".into(),
+                value: self.conf.target_url.clone(),
+            });
         }
         if all.is_empty() {
             self.say("no testable parameters found in URL/POST data/cookie".to_string());

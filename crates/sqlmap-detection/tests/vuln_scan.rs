@@ -162,6 +162,23 @@ fn union_probing_finds_column_count() {
 }
 
 #[test]
+fn level3_finds_user_agent_injection() {
+    let app = VulnApp::start(8748);
+    let conf = Config {
+        target_url: app.url("/track"),
+        level: 3,
+        techniques: vec![Technique::Boolean, Technique::Error],
+        timeout: 15,
+        ..Config::default()
+    };
+    let kb = scan(&conf);
+    assert!(
+        kb.injections.iter().any(|i| i.place == sqlmap_core::config::Place::UserAgent && i.parameter == "User-Agent"),
+        "expected User-Agent injection, got {:?}", kb.injections
+    );
+}
+
+#[test]
 fn clean_param_reports_nothing() {
     let app = VulnApp::start(8743);
     // /other has no params at all - engine must report no testables, not crash.

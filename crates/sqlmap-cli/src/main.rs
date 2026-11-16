@@ -70,6 +70,10 @@ struct Args {
     /// Follow redirects (sqlmap --follow-redirects)
     #[arg(long)]
     follow_redirects: bool,
+
+    /// Print findings as JSON instead of text
+    #[arg(long)]
+    json: bool,
 }
 
 fn main() {
@@ -93,18 +97,29 @@ fn main() {
         ..Config::default()
     };
 
-    println!("sqlmap-rs {} - Rust port of sqlmap (GPL-2.0)", env!("CARGO_PKG_VERSION"));
-    println!("[*] target: {}", conf.target_url);
+    if !args.json {
+        println!("sqlmap-rs {} - Rust port of sqlmap (GPL-2.0)", env!("CARGO_PKG_VERSION"));
+        println!("[*] target: {}", conf.target_url);
+    }
 
     let client = sqlmap_http::client::Client::new(&conf);
     let engine = sqlmap_detection::Engine::new(&client, &conf);
     let result = engine.scan();
 
+    let kb = &result.kb;
+    if args.json {
+        let out = serde_json::json!({
+            "target": conf.target_url,
+            "fingerprinted_dbms": kb.fingerprinted_dbms,
+            "injections": kb.injections,
+            "log": result.log,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        std::process::exit(if kb.injections.is_empty() { 1 } else { 0 });
+    }
     for line in &result.log {
         println!("[*] {line}");
     }
-
-    let kb = &result.kb;
     if let Some(dbms) = &kb.fingerprinted_dbms {
         println!("[+] back-end DBMS: {dbms}");
     }
