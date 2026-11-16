@@ -273,18 +273,27 @@ def compare(value, op, num):
     return value == num
 
 
-def eval_value(value: str, quoted: bool = False) -> str:
+def eval_value(value: str, quoted: bool = False, legacy: bool = False) -> str:
     """Decide the page for an injected parameter value.
 
     Emulates a real query template: the app wraps string params in quotes,
-    and "-- " comments out the remainder of the statement.
+    and "-- " / "#" comment out the remainder of the statement. `legacy`
+    emulates a target where ExtractValue errors are suppressed (forcing
+    second-wave error payloads like UpdateXML).
     """
     value = value.replace("/**/", " ")
-    value = re.sub(r"#[^\n]*\n", " ", value)  # MySQL '#' comment (tamper space2hash)
+    value = re.sub(r"#[^\n]*(\n|$)", " ", value)  # MySQL '#' comment
     full = ("'" + value + "'") if quoted else value
     full = strip_dash_comments(full)
     # Error-based: ExtractValue(1,CONCAT(0x7e,<marker>)) echoes the marker.
     m = re.search(r"ExtractValue\(1,\s*CONCAT\(0x7e,\s*([A-Za-z0-9]+)\)\)", full, re.I)
+    if m:
+        if legacy:
+            # Error raised but the marker is NOT echoed (fragment is fixed).
+            return mysql_error("'")
+        return xpath_error(m.group(1))
+    # Error-based: UpdateXML(1,CONCAT(0x7e,<marker>),1) echoes the marker.
+    m = re.search(r"UpdateXML\(1,\s*CONCAT\(0x7e,\s*([A-Za-z0-9]+)\),1\)", full, re.I)
     if m:
         return xpath_error(m.group(1))
     # Time-based: SLEEP(n) anywhere.
@@ -409,6 +418,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif u.path == "/get":
             page = eval_value(unquote_plus(params.get("id", "1")))
+        elif u.path == "/legacy":
+            page = eval_value(unquote_plus(params.get("id", "1")), legacy=True)
         elif u.path == "/item":
             page = eval_value(unquote_plus(params.get("name", "widget")), quoted=True)
         elif u.path == "/track":

