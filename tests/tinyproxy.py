@@ -22,7 +22,11 @@ LOG_LOCK = threading.Lock()
 
 # Headers that must not be copied hop-by-hop.
 HOP_BY_HOP = {"proxy-connection", "connection", "keep-alive", "te",
-              "trailer", "transfer-encoding", "upgrade"}
+              "trailer", "transfer-encoding", "upgrade",
+              # RFC 7235: Proxy-Authorization is hop-by-hop. The proxy
+              # consumes it for its own 407 check and must never relay it
+              # to the origin.
+              "proxy-authorization"}
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -49,7 +49,11 @@ pub fn same_host(a: &str, b: &str) -> bool {
     !a.is_empty() && !b.is_empty() && host(a) == host(b)
 }
 
-pub(crate) fn origin(url: &str) -> &str {
+/// The strict scope primitive: exact scheme://host:port prefix. Crawl
+/// scope, redirect following and form-action scope all compare origins
+/// with this; upstream-style hostname comparison (same_host) is pinned
+/// for compatibility but never used for scope decisions.
+pub fn origin(url: &str) -> &str {
     match url.find("://") {
         Some(i) => {
             let rest = &url[i + 3..];

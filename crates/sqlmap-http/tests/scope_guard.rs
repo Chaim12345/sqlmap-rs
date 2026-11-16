@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 struct Hit {
     request_line: String,
     had_cookie: bool,
+    had_proxy_auth: bool,
 }
 
 type Hits = Arc<Mutex<Vec<Hit>>>;
@@ -63,6 +64,7 @@ fn handle_conn(mut stream: std::net::TcpStream, kind: &str, cross_port: u16, see
         }
         let request_line = line.trim().to_string();
         let mut had_cookie = false;
+        let mut had_proxy_auth = false;
         let mut content_length = 0usize;
         loop {
             let mut h = String::new();
@@ -72,6 +74,9 @@ fn handle_conn(mut stream: std::net::TcpStream, kind: &str, cross_port: u16, see
             let hl = h.to_ascii_lowercase();
             if hl.starts_with("cookie:") {
                 had_cookie = true;
+            }
+            if hl.starts_with("proxy-authorization:") {
+                had_proxy_auth = true;
             }
             if let Some(v) = hl.strip_prefix("content-length:") {
                 content_length = v.trim().parse().unwrap_or(0);
@@ -84,6 +89,7 @@ fn handle_conn(mut stream: std::net::TcpStream, kind: &str, cross_port: u16, see
         seen.lock().unwrap().push(Hit {
             request_line: request_line.clone(),
             had_cookie,
+            had_proxy_auth,
         });
         let path = request_line.split_whitespace().nth(1).unwrap_or("/");
         let (status, location, body) = route(kind, path, cross_port);
@@ -192,4 +198,80 @@ fn crawler_scope_stays_strict_origin() {
     let a = Mini::start("a", 0);
     let b = Mini::start("b", 0);
     assert!(sqlmap_http::crawl::same_host(&a.url("/x"), &b.url("/y")));
+}
+
+struct Proc(std::process::Child);
+
+impl Proc {
+    fn spawn(args: &[String]) -> Self {
+        let child = std::process::Command::new("python3")
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to start fixture (python3 required)");
+        Proc(child)
+    }
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+    }
+}
+
+fn wait_port(port: u16) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("fixture did not come up on port {port}");
+}
+
+#[test]
+fn proxy_consumes_proxy_authorization_and_origin_never_sees_it() {
+    let origin = Mini::start("b", 0);
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let log = std::env::temp_dir().join(format!("sqlmaprs-scope-proxy-{}.log", std::process::id()));
+    let _proxy = Proc::spawn(&[
+        format!("{manifest}/../../tests/tinyproxy.py"),
+        "--auth".into(),
+        "testuser:testpass".into(),
+        "8876".into(),
+        log.to_string_lossy().into_owned(),
+    ]);
+    wait_port(8876);
+    let conf = Config {
+        target_url: origin.url("/b"),
+        proxy: Some("http://127.0.0.1:8876".into()),
+        proxy_cred: Some("testuser:testpass".into()),
+        ..Config::default()
+    };
+    let client = Client::new(&conf);
+    let resp = get(&client, &origin.url("/b"));
+    assert_eq!(resp.status, 200, "request through auth proxy reached origin");
+    let hits = origin.hits.lock().unwrap();
+    assert!(!hits.is_empty(), "origin saw no request");
+    assert!(
+        hits.iter().all(|h| !h.had_proxy_auth),
+        "Proxy-Authorization leaked to the origin through the proxy"
+    );
+    drop(hits);
+    let proxy_log = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        proxy_log.contains("auth=ok"),
+        "proxy did not record an authenticated request: {proxy_log}"
+    );
+}
+
+#[test]
+fn direct_request_without_proxy_never_sets_proxy_authorization() {
+    let origin = Mini::start("b", 0);
+    let resp = get(&client(), &origin.url("/b"));
+    assert_eq!(resp.status, 200);
+    let hits = origin.hits.lock().unwrap();
+    assert!(hits.iter().all(|h| !h.had_proxy_auth));
 }

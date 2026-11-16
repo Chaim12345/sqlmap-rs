@@ -124,6 +124,19 @@ pub fn scan_auto(client: &Client, conf: &Config) -> ScanResult {
             form.action,
             form.inputs.len()
         ));
+        // Scope guard: a form whose action leaves the target origin is
+        // skipped. The engine runs with the shared client, whose session
+        // cookies belong to the target origin; submitting off-origin would
+        // forward them there. (Browsers do submit cross-origin forms, but
+        // never with another origin's credentials attached by us.)
+        if sqlmap_http::crawl::origin(&form.action) != sqlmap_http::crawl::origin(&conf.target_url) {
+            out.log.push(format!(
+                "skipping form with off-origin action: {} (target origin {})",
+                form.action,
+                sqlmap_http::crawl::origin(&conf.target_url)
+            ));
+            continue;
+        }
         let fconf = form_conf(conf, form);
         merge(&mut out, Engine::new(client, &fconf).scan());
     }

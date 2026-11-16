@@ -90,6 +90,72 @@ pub fn filtered_page(body: &str) -> String {
     out
 }
 
+/// Marker replacing reflected payload forms before comparison
+/// (same token as upstream lib/core/settings.py REFLECTED_VALUE_MARKER).
+pub const REFLECTED_VALUE_MARKER: &str = "__REFLECTED_VALUE__";
+
+/// Port of upstream lib/utils/nonsql.py stripReflection: the deterministic
+/// reflection guard. Removes the raw, percent-decoded and fully
+/// percent-encoded forms of a payload from a page before any two responses
+/// are compared, so a pure echo endpoint stops looking like a boolean
+/// oracle. Deliberately NOT lib/core/common.py removeReflectiveValues: that
+/// scan-wide heuristic switches itself off after REFLECTIVE_MISS_THRESHOLD
+/// misses, on regex timeout, and during heuristic mode. This port is
+/// stateless and cannot stop guarding mid-scan.
+pub fn strip_reflection(page: &str, payload: &str) -> String {
+    if page.is_empty() || payload.is_empty() {
+        return page.to_string();
+    }
+    let mut forms: Vec<String> = vec![
+        payload.to_string(),
+        percent_decode(payload),
+        full_encode(payload),
+    ];
+    forms.retain(|f| !f.is_empty());
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    forms.dedup();
+    let mut out = page.to_string();
+    for form in forms {
+        out = out.replace(&form, REFLECTED_VALUE_MARKER);
+    }
+    out
+}
+
+/// sqlmap urlencode(value, safe=""): every byte outside [A-Za-z0-9_.-~] is
+/// percent-encoded (space becomes %20, not +).
+fn full_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// sqlmap urldecode(value, convall=True): %XX sequences decoded; '+' is
+/// left alone (plus-to-space is a separate opt-in in sqlmap).
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 3 <= bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(v) = u8::from_str_radix(hex, 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
