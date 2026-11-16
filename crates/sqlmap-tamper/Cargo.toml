@@ -1,0 +1,6 @@
+[package]
+name = "sqlmap-tamper"
+description = "Tamper/evasion transformations (port of sqlmap tamper scripts)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true

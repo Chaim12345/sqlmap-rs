@@ -1,0 +1,9 @@
+[package]
+name = "sqlmap-payloads"
+description = "Injection payload and boundary definitions per technique (port of sqlmap data/xml/payloads + boundaries)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqlmap-core = { path = "../sqlmap-core" }

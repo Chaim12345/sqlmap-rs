@@ -1,0 +1,9 @@
+[package]
+name = "sqlmap-core"
+description = "Core configuration, target and knowledge-base types (port of sqlmap lib/core)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

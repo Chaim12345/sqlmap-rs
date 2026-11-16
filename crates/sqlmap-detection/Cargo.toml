@@ -1,0 +1,14 @@
+[package]
+name = "sqlmap-detection"
+description = "Detection engine: boolean-based, error-based, time-based blind checks (port of sqlmap lib/controller/checks)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqlmap-core = { path = "../sqlmap-core" }
+sqlmap-http = { path = "../sqlmap-http" }
+sqlmap-dbms = { path = "../sqlmap-dbms" }
+sqlmap-payloads = { path = "../sqlmap-payloads" }
+sqlmap-tamper = { path = "../sqlmap-tamper" }
+regex = "1"

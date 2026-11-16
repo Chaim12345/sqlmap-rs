@@ -1,0 +1,9 @@
+[package]
+name = "sqlmap-dbms"
+description = "DBMS fingerprinting and error-message pattern tables (port of sqlmap data/xml/errors.xml + DBMS plugins)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+regex = "1"

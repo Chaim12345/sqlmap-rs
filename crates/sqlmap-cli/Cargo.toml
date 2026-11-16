@@ -1,0 +1,19 @@
+[package]
+name = "sqlmap-cli"
+description = "Command-line entry point (port of sqlmap.py option parsing and controller flow)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sqlmap-rs"
+path = "src/main.rs"
+
+[dependencies]
+sqlmap-core = { path = "../sqlmap-core" }
+sqlmap-http = { path = "../sqlmap-http" }
+sqlmap-dbms = { path = "../sqlmap-dbms" }
+sqlmap-payloads = { path = "../sqlmap-payloads" }
+sqlmap-tamper = { path = "../sqlmap-tamper" }
+sqlmap-detection = { path = "../sqlmap-detection" }
+clap = { version = "4", features = ["derive"] }

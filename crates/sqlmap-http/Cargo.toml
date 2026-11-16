@@ -1,0 +1,12 @@
+[package]
+name = "sqlmap-http"
+description = "HTTP request engine and page-comparison logic (port of sqlmap lib/request + lib/core/comparison)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqlmap-core = { path = "../sqlmap-core" }
+ureq = { version = "2", features = ["cookies", "gzip"] }
+url = "2"
+serde = { version = "1", features = ["derive"] }

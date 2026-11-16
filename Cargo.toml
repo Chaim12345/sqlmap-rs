@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sqlmap-core",
+    "crates/sqlmap-http",
+    "crates/sqlmap-dbms",
+    "crates/sqlmap-payloads",
+    "crates/sqlmap-tamper",
+    "crates/sqlmap-detection",
+    "crates/sqlmap-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+repository = "https://github.com/Chaim12345/sqlmap-rs"
