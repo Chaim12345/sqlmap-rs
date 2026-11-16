@@ -36,19 +36,18 @@ fn matching_blocks(a: &[char], b: &[char], alo: usize, ahi: usize, blo: usize, b
     for (i, ch) in b[blo..bhi].iter().enumerate() {
         index.entry(*ch).or_default().push(blo + i);
     }
-    // Find longest match.
+    // Find longest match - difflib's find_longest_match: the chain-length
+    // map carries over from the previous i round (newlengths swap), so
+    // adjacent occurrences within one round do not fabricate a longer chain.
     let (mut best_i, mut best_j, mut best_len) = (alo, blo, 0usize);
+    let mut lengths: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for i in alo..ahi {
-        let mut lengths: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut newlengths: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
         if let Some(positions) = index.get(&a[i]) {
             for &j in positions {
-                let prev = if i > alo && j > blo {
-                    lengths.get(&(j - 1)).copied().unwrap_or(0)
-                } else {
-                    0
-                };
+                let prev = j.checked_sub(1).and_then(|p| lengths.get(&p)).copied().unwrap_or(0);
                 let len = prev + 1;
-                lengths.insert(j, len);
+                newlengths.insert(j, len);
                 if len > best_len {
                     best_i = i + 1 - len;
                     best_j = j + 1 - len;
@@ -56,6 +55,7 @@ fn matching_blocks(a: &[char], b: &[char], alo: usize, ahi: usize, blo: usize, b
                 }
             }
         }
+        lengths = newlengths;
     }
     if best_len == 0 {
         return 0;

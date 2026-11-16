@@ -2,8 +2,7 @@
 
 Upstream suite pinned at sqlmapproject/sqlmap commit
 [`8b78b676c1376ae28feccd957b03bbecea05eff1`](https://github.com/sqlmapproject/sqlmap/tree/8b78b676c1376ae28feccd957b03bbecea05eff1/tests)
-(2026-11-12, 112 `tests/test_*.py` files). Our adaptation landed in commit
-`be01d13` on main. All execution is against this repo's local fixtures only
+(2026-11-12, 112 `tests/test_*.py` files). Our adaptations landed in commits `be01d13` and later on main. All execution is against this repo's local fixtures only
 (`tests/vulnapp.py`, `tests/tinyproxy.py`, `tests/tinysocks.py`); no external
 target is ever touched.
 
@@ -31,9 +30,9 @@ verbatim upstream inputs/expectations.
 
 | Upstream file | Contract | Adaptation status |
 | --- | --- | --- |
-| [test_tamper.py](https://github.com/sqlmapproject/sqlmap/blob/8b78b676c1376ae28feccd957b03bbecea05eff1/tests/test_tamper.py) | tamper input->output transforms | **DONE**: `crates/sqlmap-tamper/tests/upstream_cases.rs` - 15/17 doctest cases byte-exact, 1 pinned divergence (symboliclogical: raw `&&`/`||` encoded at transport), 1 pinned not-ported (greatest) |
+| [test_tamper.py](https://github.com/sqlmapproject/sqlmap/blob/8b78b676c1376ae28feccd957b03bbecea05eff1/tests/test_tamper.py) | tamper input->output transforms | **partial (15/17)**: `crates/sqlmap-tamper/tests/upstream_cases.rs` - 15 doctest cases byte-exact, 1 pinned divergence (symboliclogical: raw `&&`/`||` encoded at transport), 1 pinned not-ported (greatest) |
 | test_agent.py | forged query shapes (boundary prefix/suffix, comment placement) | open - SQL-text pins against our payload assembly |
-| test_comparison.py | page-comparison oracle (true/false/None, ratio semantics) | open - our engine ports the difflib ratio semantics; unit-level pins |
+| [test_comparison.py](https://github.com/sqlmapproject/sqlmap/blob/8b78b676c1376ae28feccd957b03bbecea05eff1/tests/test_comparison.py) | page-comparison oracle (true/false/None, ratio semantics) | **partial**: `crates/sqlmap-http/tests/upstream_cases.rs` pins difflib ratio values (computed from CPython difflib) and the 0.02/0.98 bounds. The --string/--not-string/--regexp/--code match classes and the negative-logic flip are **not ported** (no CLI flags) - gaps, not passes. Reflection masking (removeReflectiveValues) is **not ported**: our filtered_page only strips volatile whitespace and hex tokens. Divergence: on pages >200 chars upstream's difflib applies its autojunk heuristic; our port disables it (pins stay under 200 chars so they are exact) |
 | test_dialect.py | per-DBMS enumeration query building (queries.xml) | partially covered - our queries.rs unit tests pin the same SQL text; more cases open |
 | test_dialectdbms.py | operator/typing dialect heuristics | partial - our fingerprinting is narrower |
 | test_settings_regex.py | DBMS error banners, WAF signature regexes | open - our error-based detection and waf.rs carry ported signatures |
@@ -50,13 +49,13 @@ verbatim upstream inputs/expectations.
 | test_comparison_json.py | JSON-aware comparison oracle | **gap first**: no JSON comparator in our port; adapt after building it |
 | test_boolean_jitter.py / test_jitter_stress.py | engines under response jitter | **gap first**: our engines are single-measurement (README-admitted); adapt after retry/jitter handling exists |
 
-## B. Behaviorally covered by stronger tests here (6 files)
+## B. Related coverage in this repo (6 files) - NOT upstream conformance
 
-These run sqlmap's engines against a mocked in-process oracle. The same
-extraction contracts are already proven end-to-end in this repo against the
-live local emulator, which is a stronger check than a mock; adapting them
-would duplicate coverage, so they are recorded as behaviorally covered, not
-ported: test_error_engine.rs -> `crates/sqlmap-detection/tests/` error-based
+These run sqlmap's engines against a mocked in-process oracle. This repo
+proves similar extraction contracts end-to-end against its own local
+emulator - but those are DIFFERENT fixtures and harnesses, so they do NOT
+establish that the original upstream contracts pass; they are recorded as
+related coverage only, never as conformance: test_error_engine.rs -> `crates/sqlmap-detection/tests/` error-based
 exfil; test_union_engine.py and test_inference_engine.py and
 test_techniques.py -> union/boolean/time/stacked/inline exfil integration
 tests; test_databases_enum.py / test_users_enum.py -> `--dbs`/`--tables`/
@@ -103,7 +102,7 @@ test_property, test_purge, test_replication, test_request_basic,
 test_safe2bin, test_serialize, test_sgmllib, test_sqllint, test_sqlparse,
 test_strings, test_texthelpers, test_threads, test_utils, test_wordlist.
 
-## Bugs the adaptation already caught (fixed in `be01d13`)
+## Bugs the adaptation already caught (fixed in `be01d13` and later)
 
 Running upstream's doctest cases against our tamper ports surfaced four
 real fidelity bugs, each re-pinned against the upstream scripts' actual
@@ -111,7 +110,10 @@ runtime output: `between` (naive char swap -> upstream's operand-aware
 rewrite), `percentage` (was prefixing spaces), `halfversionedmorekeywords`/
 `versionedkeywords` (missing upstream's space-eating post-pass),
 `bluecoat` (was replacing every space instead of keyword-suffixed `%09`
-plus guarded `=` -> ` LIKE `).
+plus guarded `=` -> ` LIKE `). Pinning difflib ratio values caught a fifth:
+our SequenceMatcher DP carried chain lengths within the same round instead
+of across rounds, undercounting matches (and panicking on adjacent repeated
+characters); fixed to difflib's newlengths-swap semantics and pinned exact.
 
 ## Discipline
 
