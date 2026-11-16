@@ -14,5 +14,6 @@
 pub mod engine;
 pub mod exfil;
 pub mod forms_scan;
+pub mod waf;
 
 pub use engine::{Engine, ScanResult};

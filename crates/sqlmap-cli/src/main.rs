@@ -110,6 +110,10 @@ struct Args {
     /// Worker threads for concurrent HTTP requests (sqlmap --threads)
     #[arg(long, default_value_t = 4)]
     threads: usize,
+
+    /// Identify a WAF/IPS in front of the target (sqlmap --identify-waf)
+    #[arg(long)]
+    identify_waf: bool,
 }
 
 fn main() {
@@ -139,6 +143,7 @@ fn main() {
         forms: args.forms,
         crawl_depth: args.crawl,
         threads: args.threads.max(1),
+        identify_waf: args.identify_waf,
         ..Config::default()
     };
 
@@ -157,6 +162,7 @@ fn main() {
             "fingerprinted_dbms": kb.fingerprinted_dbms,
             "injections": kb.injections,
             "enumeration": kb.enumeration,
+            "wafs": kb.wafs,
             "log": result.log,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
@@ -167,6 +173,9 @@ fn main() {
     }
     if let Some(dbms) = &kb.fingerprinted_dbms {
         println!("[+] back-end DBMS: {dbms}");
+    }
+    if !kb.wafs.is_empty() {
+        println!("[+] WAF/IPS identified: {}", kb.wafs.join(", "));
     }
     if kb.injections.is_empty() {
         println!("[-] no injection points found");

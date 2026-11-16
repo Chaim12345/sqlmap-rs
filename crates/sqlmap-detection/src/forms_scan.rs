@@ -38,11 +38,28 @@ fn merge(dst: &mut ScanResult, src: ScanResult) {
     if dst.kb.enumeration.is_empty() {
         dst.kb.enumeration = src.kb.enumeration;
     }
+    for w in src.kb.wafs {
+        if !dst.kb.wafs.contains(&w) {
+            dst.kb.wafs.push(w);
+        }
+    }
     dst.log.extend(src.log);
 }
 
-/// Scan a target, expanding `--crawl` and `--forms` when set.
+/// Scan a target, expanding `--identify-waf`, `--crawl` and `--forms` when
+/// set. WAF identification runs once, on the outermost call.
 pub fn scan_auto(client: &Client, conf: &Config) -> ScanResult {
+    if conf.identify_waf {
+        let (names, log) = crate::waf::identify(client, conf);
+        let mut inner = conf.clone();
+        inner.identify_waf = false;
+        let mut out = scan_auto(client, &inner);
+        out.kb.wafs = names;
+        let mut full_log = log;
+        full_log.extend(out.log);
+        out.log = full_log;
+        return out;
+    }
     if conf.crawl_depth > 0 {
         return crawl_scan(client, conf);
     }

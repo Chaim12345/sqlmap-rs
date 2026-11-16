@@ -77,6 +77,9 @@ pub struct Config {
     pub crawl_depth: u8,
     /// Worker threads for concurrent HTTP requests (sqlmap --threads).
     pub threads: usize,
+    /// Identify a WAF/IPS in front of the target before scanning
+    /// (sqlmap --identify-waf).
+    pub identify_waf: bool,
 }
 
 impl Config {
@@ -119,6 +122,7 @@ impl Default for Config {
             forms: false,
             crawl_depth: 0,
             threads: 4,
+            identify_waf: false,
         }
     }
 }

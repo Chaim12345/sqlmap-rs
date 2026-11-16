@@ -13,6 +13,8 @@ pub struct KnowledgeBase {
     pub tested_params: Vec<String>,
     /// Results of --dbs/--tables/--columns/--dump enumeration, if requested.
     pub enumeration: Enumeration,
+    /// WAF/IPS products identified in front of the target (--identify-waf).
+    pub wafs: Vec<String>,
 }
 
 /// Enumeration/exfiltration results (port of sqlmap `kb.data` outputs).

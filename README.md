@@ -35,6 +35,8 @@ cargo run -p sqlmap-cli -- -u "http://localhost/search.php" --forms
 cargo run -p sqlmap-cli -- -u "http://localhost/index.php" --crawl 2
 # run independent requests on 8 worker threads (default 4)
 cargo run -p sqlmap-cli -- -u "http://localhost/index.php" --crawl 2 --threads 8
+# identify a WAF/IPS in front of the target before scanning
+cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --identify-waf
 ```
 
 Verified end-to-end by integration tests that spawn a local deliberately-vulnerable
@@ -64,8 +66,8 @@ push.
 - Stacked-queries and inline-query techniques
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
   the information_schema queries used by --dbs/--dump are MySQL-flavored)
-- The remaining ~50 tamper scripts, WAF identification, session persistence,
-  multi-target modes, proxy support
+- The remaining ~50 tamper scripts, session persistence, multi-target modes,
+  proxy support
 
 The boundary between ported and not-ported is enforced by the code: the engine
 skips unknown techniques/tampers with a log line rather than pretending.
