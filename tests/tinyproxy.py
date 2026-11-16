@@ -11,6 +11,8 @@ stdlib only.
 """
 
 import http.client
+import socket
+import threading
 import sys
 import threading
 import urllib.parse
@@ -94,6 +96,45 @@ class Handler(BaseHTTPRequestHandler):
     do_HEAD = _relay
     do_PUT = _relay
     do_DELETE = _relay
+
+    def do_CONNECT(self):
+        # RFC 7231 tunnel: Proxy-Authorization is consumed here (407 without
+        # it) and can never reach the origin - after CONNECT the proxy
+        # shuttles opaque TLS bytes and sees nothing inside the tunnel.
+        if not self._check_auth():
+            return
+        host, _, port = self.path.partition(":")
+        try:
+            upstream = socket.create_connection((host, int(port or 443)), timeout=10)
+        except OSError:
+            self.send_error(502, "origin unreachable")
+            return
+        self._log(f"CONNECT {self.path} auth=ok")
+        self.send_response(200, "Connection Established")
+        self.end_headers()
+        self.connection.settimeout(None)
+
+        def pump(src, dst):
+            try:
+                while True:
+                    chunk = src.recv(65536)
+                    if not chunk:
+                        break
+                    dst.sendall(chunk)
+            except OSError:
+                pass
+            finally:
+                try:
+                    dst.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+
+        t = threading.Thread(target=pump, args=(self.connection, upstream), daemon=True)
+        t.start()
+        pump(upstream, self.connection)
+        t.join(timeout=5)
+        upstream.close()
+        self.close_connection = True
 
     def log_message(self, *args):
         pass

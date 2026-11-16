@@ -81,8 +81,11 @@ push.
 - A handful of upstream tamper scripts deliberately skipped (greatest,
   plus2concat/plus2fnconcat, securesphere; reasons in the tamper crate docs)
 - Proxying HTTPS targets (`--proxy` covers plain HTTP proxies, Basic proxy
-  auth via `--proxy-cred` or userinfo in the proxy URL, and SOCKS4/4A/5 via
-  `socks5://...` proxy URLs; ureq only uses CONNECT for https targets)
+  auth via `--proxy-cred` or userinfo in the proxy URL for HTTP targets, and
+  SOCKS4/4A/5 via `socks5://...` proxy URLs; https targets go through CONNECT,
+  but ureq 2.12 sends no Proxy-Authorization on CONNECT, so authenticated
+  https proxying fails loud with the proxy's 407 instead of connecting -
+  pinned in crates/sqlmap-http/tests/tls_connect.rs)
 - The session store is a per-target JSON cache, not sqlmap's sqlite schema
 
 The boundary between ported and not-ported is enforced by the code: the engine
