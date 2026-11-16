@@ -353,6 +353,7 @@ impl<'a> Engine<'a> {
                 continue;
             }
             let mut last_ok = 0u32;
+            let mut last_val = String::new();
             let mut broke_at: Option<u32> = None;
             for n in 1..=10u32 {
                 let q = format!(" ORDER BY {n}");
@@ -363,6 +364,7 @@ impl<'a> Engine<'a> {
                 };
                 if ratio(orig_page, &filtered_page(&resp.body)) >= threshold {
                     last_ok = n;
+                    last_val = val;
                 } else {
                     broke_at = Some(n);
                     break;
@@ -381,7 +383,7 @@ impl<'a> Engine<'a> {
                         parameter: param.name.clone(),
                         technique: Technique::Union,
                         boundary: boundary.clone(),
-                        payload: format!("{} ORDER BY {count}{}", param.value, boundary.suffix),
+                        payload: last_val,
                         dbms: dbms_hint.map(|s| s.to_string()),
                         note: format!("column count = {count} (ORDER BY probing); UNION data exfiltration not ported"),
                     });
