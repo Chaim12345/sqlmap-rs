@@ -12,7 +12,7 @@ use sqlmap_core::parse_techniques;
 #[command(name = "sqlmap-rs", version, about, long_about = None)]
 struct Args {
     /// Target URL (sqlmap -u)
-    #[arg(short = 'u', long, required_unless_present = "request_file")]
+    #[arg(short = 'u', long, required_unless_present_any = ["request_file", "bulk_file"])]
     url: Option<String>,
 
     /// Load the target from a raw HTTP request file (sqlmap -r)
@@ -130,6 +130,10 @@ struct Args {
     /// Ignore and overwrite the session file (sqlmap --flush-session)
     #[arg(long)]
     flush_session: bool,
+
+    /// Scan multiple targets listed in a text file, one URL per line (sqlmap -m)
+    #[arg(short = 'm', long = "bulk-file")]
+    bulk_file: Option<String>,
 }
 
 fn main() {
@@ -197,16 +201,43 @@ fn main() {
         ..Config::default()
     };
 
-    if !args.json {
+    // sqlmap -m: every non-empty, non-comment line is a target scanned with
+    // the same options; the exit status reflects whether ANY target was
+    // injectable.
+    if let Some(file) = &args.bulk_file {
+        let text = std::fs::read_to_string(file).unwrap_or_else(|e| {
+            eprintln!("[-] cannot read bulk file {file}: {e}");
+            std::process::exit(2);
+        });
+        let mut any = false;
+        for line in text.lines() {
+            let target = line.trim();
+            if target.is_empty() || target.starts_with('#') {
+                continue;
+            }
+            let mut tconf = conf.clone();
+            tconf.target_url = target.to_string();
+            tconf.session_file = None; // per-target caches are keyed by URL; bulk keeps it simple
+            any |= run_target(&tconf, args.json);
+        }
+        std::process::exit(if any { 0 } else { 1 });
+    }
+
+    std::process::exit(if run_target(&conf, args.json) { 0 } else { 1 });
+}
+
+/// Scan one target and report; true when injection points were found.
+fn run_target(conf: &Config, json: bool) -> bool {
+    if !json {
         println!("sqlmap-rs {} - Rust port of sqlmap (GPL-2.0)", env!("CARGO_PKG_VERSION"));
         println!("[*] target: {}", conf.target_url);
     }
 
-    let client = sqlmap_http::client::Client::new(&conf);
-    let result = sqlmap_detection::forms_scan::scan_auto(&client, &conf);
+    let client = sqlmap_http::client::Client::new(conf);
+    let result = sqlmap_detection::forms_scan::scan_auto(&client, conf);
 
     let kb = &result.kb;
-    if args.json {
+    if json {
         let out = serde_json::json!({
             "target": conf.target_url,
             "fingerprinted_dbms": kb.fingerprinted_dbms,
@@ -216,7 +247,7 @@ fn main() {
             "log": result.log,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
-        std::process::exit(if kb.injections.is_empty() { 1 } else { 0 });
+        return !kb.injections.is_empty();
     }
     for line in &result.log {
         println!("[*] {line}");
@@ -229,7 +260,7 @@ fn main() {
     }
     if kb.injections.is_empty() {
         println!("[-] no injection points found");
-        std::process::exit(1);
+        return false;
     }
     println!("[+] {} injection point(s) found:", kb.injections.len());
     for inj in &kb.injections {
@@ -257,4 +288,5 @@ fn main() {
             }
         }
     }
+    true
 }
