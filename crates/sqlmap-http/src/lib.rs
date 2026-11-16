@@ -3,6 +3,7 @@
 //! `lib/core/comparison.py` (page similarity ratio).
 
 pub mod client;
+pub mod crawl;
 pub mod forms;
 pub mod comparison;
 pub mod params;

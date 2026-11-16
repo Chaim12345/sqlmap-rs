@@ -41,8 +41,11 @@ fn merge(dst: &mut ScanResult, src: ScanResult) {
     dst.log.extend(src.log);
 }
 
-/// Scan a target, expanding `--forms` when set.
+/// Scan a target, expanding `--crawl` and `--forms` when set.
 pub fn scan_auto(client: &Client, conf: &Config) -> ScanResult {
+    if conf.crawl_depth > 0 {
+        return crawl_scan(client, conf);
+    }
     if !conf.forms {
         return Engine::new(client, conf).scan();
     }
@@ -78,6 +81,31 @@ pub fn scan_auto(client: &Client, conf: &Config) -> ScanResult {
         ));
         let fconf = form_conf(conf, form);
         merge(&mut out, Engine::new(client, &fconf).scan());
+    }
+    out
+}
+
+/// `--crawl` orchestration (port of sqlmap `lib/utils/crawler.py` + the
+/// controller loop over collected targets): walk same-host links from the
+/// target up to the configured depth, then scan every page collected. Each
+/// page goes back through `scan_auto`, so `--forms` composes with `--crawl`.
+fn crawl_scan(client: &Client, conf: &Config) -> ScanResult {
+    let mut out = ScanResult {
+        kb: KnowledgeBase::default(),
+        log: Vec::new(),
+    };
+    let pages = sqlmap_http::crawl::crawl(client, &conf.target_url, conf.crawl_depth);
+    out.log.push(format!(
+        "crawler collected {} page(s) up to depth {}",
+        pages.len(),
+        conf.crawl_depth
+    ));
+    for page in &pages {
+        out.log.push(format!("testing crawled page: {}", page.url));
+        let mut pconf = conf.clone();
+        pconf.crawl_depth = 0;
+        pconf.target_url = page.url.clone();
+        merge(&mut out, scan_auto(client, &pconf));
     }
     out
 }

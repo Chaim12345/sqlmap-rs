@@ -102,6 +102,10 @@ struct Args {
     /// Parse and test target page's HTML forms (sqlmap --forms)
     #[arg(long)]
     forms: bool,
+
+    /// Crawl the target same-host up to this depth and test every page found (sqlmap --crawl)
+    #[arg(long, default_value_t = 0)]
+    crawl: u8,
 }
 
 fn main() {
@@ -129,6 +133,7 @@ fn main() {
         target_db: args.db,
         target_table: args.table,
         forms: args.forms,
+        crawl_depth: args.crawl,
         ..Config::default()
     };
 

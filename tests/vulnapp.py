@@ -339,7 +339,33 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         params = dict(parse_qsl(u.query))
         page = NORMAL
-        if u.path == "/search":
+        if u.path == "/":
+            # Link hub for crawler tests: same-host links at depth 1, one
+            # off-site link, non-http schemes, a fragment, a static asset.
+            page = (
+                "<html><body><h1>Index</h1>"
+                '<a href="/search">search</a>'
+                '<a href="/get?id=1">item by id</a>'
+                '<a href="/item?name=widget">item by name</a>'
+                '<a href="/detail">detail</a>'
+                '<a href="http://example.com/offsite">external</a>'
+                '<a href="javascript:void(0)">js</a>'
+                '<a href="#frag">fragment</a>'
+                '<a href="/static/logo.png">logo</a>'
+                "</body></html>"
+            )
+        elif u.path == "/detail":
+            # Depth-2 page plus a cycle back to the index.
+            page = (
+                "<html><body><h1>Detail</h1>"
+                '<a href="/deep">deep</a>'
+                '<a href="/">home</a>'
+                '<a href="/search">search again</a>'
+                "</body></html>"
+            )
+        elif u.path == "/deep":
+            page = "<html><body><h1>Deep</h1></body></html>"
+        elif u.path == "/search":
             page = (
                 "<html><body>"
                 '<form action="/item" method="get">'

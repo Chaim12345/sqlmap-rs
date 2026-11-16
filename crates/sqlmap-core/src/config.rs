@@ -72,6 +72,9 @@ pub struct Config {
     pub target_table: Option<String>,
     /// Parse and test the target page's HTML forms (sqlmap --forms).
     pub forms: bool,
+    /// Crawl same-host links from the target up to this depth and test every
+    /// page found; 0 disables crawling (sqlmap --crawl).
+    pub crawl_depth: u8,
 }
 
 impl Config {
@@ -112,6 +115,7 @@ impl Default for Config {
             target_db: None,
             target_table: None,
             forms: false,
+            crawl_depth: 0,
         }
     }
 }

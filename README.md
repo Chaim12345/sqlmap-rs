@@ -29,6 +29,10 @@ cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --dump -D shop -T
 
 ```
 cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --technique BET
+# discover and test the page's forms
+cargo run -p sqlmap-cli -- -u "http://localhost/search.php" --forms
+# crawl same-host links up to depth 2 and test every page found
+cargo run -p sqlmap-cli -- -u "http://localhost/index.php" --crawl 2
 ```
 
 Verified end-to-end by integration tests that spawn a local deliberately-vulnerable
@@ -45,7 +49,7 @@ push.
 | sqlmap-rs crate | Upstream sqlmap | Status |
 |---|---|---|
 | `sqlmap-core` | `lib/core/{data,enums}.py`, conf/kb objects | ported (subset) |
-| `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py`, forms parsing of `lib/core/target.py` | ported (subset); `--forms` discovery |
+| `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py`, forms parsing of `lib/core/target.py`, `lib/utils/crawler.py` | ported (subset); `--forms` discovery; `--crawl` same-host crawler |
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 head entries) |
 | `sqlmap-tamper` | `tamper/*.py` | partial: 19 scripts |
@@ -59,7 +63,7 @@ push.
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
   the information_schema queries used by --dbs/--dump are MySQL-flavored)
 - The remaining ~50 tamper scripts, WAF identification, session persistence,
-  multi-target modes, crawling, proxy support, threading
+  multi-target modes, proxy support, threading
 
 The boundary between ported and not-ported is enforced by the code: the engine
 skips unknown techniques/tampers with a log line rather than pretending.
