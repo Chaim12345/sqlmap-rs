@@ -69,7 +69,7 @@ push.
 | `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py`, forms parsing of `lib/core/target.py`, `lib/utils/crawler.py` | ported (subset); `--forms` discovery; `--crawl` same-host crawler; `--threads` worker pool |
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 entries, incl. UpdateXML, subquery SLEEP, MySQL # comment variants) |
-| `sqlmap-tamper` | `tamper/*.py` | partial: 22 scripts |
+| `sqlmap-tamper` | `tamper/*.py` | partial: 30 scripts |
 | `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py`, `lib/techniques/union/use.py` | ported: boolean, error-based, time-based; UNION (column probing + data retrieval); exfiltration `--dbs/--tables/--columns/--dump` over both channels; independent UNION probes/fetches run through the worker pool |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
@@ -79,7 +79,7 @@ push.
 - Stacked-queries and inline-query techniques
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
   the information_schema queries used by --dbs/--dump are MySQL-flavored)
-- The remaining ~50 tamper scripts, parallel multi-target scanning (the
+- The remaining ~42 tamper scripts, parallel multi-target scanning (the
   `-m` bulk file walks targets sequentially), proxy auth/SOCKS and
   proxying HTTPS targets (`--proxy` covers plain HTTP CONNECT-less relays)
 - The session store is a per-target JSON cache, not sqlmap's sqlite schema

@@ -384,8 +384,87 @@ pub fn versionedmorekeywords(payload: &str) -> String {
     out
 }
 
+
+/// Random lowercase ascii string, shared by the comment-style tampers.
+fn rand_str(rng: &mut Rng, len: usize) -> String {
+    (0..len).map(|_| (b'a' + (rng.next() % 26) as u8) as char).collect()
+}
+
+/// tamper/lowercase.py: payload to lower case.
+pub fn lowercase(payload: &str) -> String {
+    payload.to_ascii_lowercase()
+}
+
+/// tamper/percentage.py: add a percentage sign in front of every character.
+pub fn percentage(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len() * 2);
+    for c in payload.chars() {
+        out.push('%');
+        out.push(c);
+    }
+    out
+}
+
+/// tamper/escapequotes.py: slash-escape single and double quotes.
+pub fn escapequotes(payload: &str) -> String {
+    payload.replace('\'', "\\'").replace('"', "\\\"")
+}
+
+/// tamper/apostrophenullencode.py: ' -> %00%27.
+pub fn apostrophenullencode(payload: &str) -> String {
+    payload.replace('\'', "%00%27")
+}
+
+/// tamper/sp_password.py: append 'sp_password' to confuse MSSQL logs.
+pub fn sp_password(payload: &str) -> String {
+    format!("{payload}sp_password")
+}
+
+/// tamper/space2morehash.py (MySQL): space -> # comment + newline.
+pub fn space2morehash(payload: &str, rng: &mut Rng) -> String {
+    let mut out = String::with_capacity(payload.len() * 2);
+    for c in payload.chars() {
+        if c == ' ' {
+            out.push_str(&format!("%23{}%0A", rand_str(rng, 6)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// tamper/space2dash.py: space -> -- comment + newline.
+pub fn space2dash(payload: &str, rng: &mut Rng) -> String {
+    let mut out = String::with_capacity(payload.len() * 2);
+    for c in payload.chars() {
+        if c == ' ' {
+            out.push_str(&format!("--{}%0A", rand_str(rng, 6)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// tamper/base64encode.py: base64-encode the whole payload.
+pub fn base64encode(payload: &str) -> String {
+    const ALPH: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in payload.as_bytes().chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPH[((n >> 18) & 63) as usize] as char);
+        out.push(ALPH[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { ALPH[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { ALPH[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
 /// Names understood by the engine (sqlmap --tamper values).
-pub const AVAILABLE: [&str; 22] = [
+pub const AVAILABLE: [&str; 30] = [
     "space2comment",
     "space2plus",
     "space2hash",
@@ -408,6 +487,14 @@ pub const AVAILABLE: [&str; 22] = [
     "symboliclogical",
     "uppercase",
     "versionedmorekeywords",
+    "lowercase",
+    "percentage",
+    "escapequotes",
+    "apostrophenullencode",
+    "sp_password",
+    "space2morehash",
+    "space2dash",
+    "base64encode",
 ];
 
 /// Apply named tampers in order (sqlmap applies them in the order given).
@@ -438,6 +525,14 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
             "symboliclogical" => symboliclogical(&out),
             "uppercase" => uppercase(&out),
             "versionedmorekeywords" => versionedmorekeywords(&out),
+            "lowercase" => lowercase(&out),
+            "percentage" => percentage(&out),
+            "escapequotes" => escapequotes(&out),
+            "apostrophenullencode" => apostrophenullencode(&out),
+            "sp_password" => sp_password(&out),
+            "space2morehash" => space2morehash(&out, &mut rng),
+            "space2dash" => space2dash(&out, &mut rng),
+            "base64encode" => base64encode(&out),
             other => return Err(format!("unknown tamper script: {other} (available: {AVAILABLE:?})")),
         };
     }
@@ -585,5 +680,22 @@ mod tests {
     #[test]
     fn unknown_tamper_errors() {
         assert!(apply_all(&["nope".to_string()], "x", 1).is_err());
+    }
+
+    #[test]
+    fn batch_22_to_30() {
+        let mut rng = Rng::new(7);
+        assert_eq!(lowercase("SeLeCt 1"), "select 1");
+        assert_eq!(percentage("AB"), "%A%B");
+        assert_eq!(escapequotes("a'b\"c"), "a\\'b\\\"c");
+        assert_eq!(apostrophenullencode("a'b"), "a%00%27b");
+        assert_eq!(sp_password("1 OR 1=1"), "1 OR 1=1sp_password");
+        let h = space2morehash("1 AND 1=1", &mut rng);
+        assert!(h.starts_with("1%23") && h.contains("%0AAND") && !h.contains(' '));
+        let d = space2dash("1 AND 1=1", &mut rng);
+        assert!(d.starts_with("1--") && d.contains("%0AAND") && !d.contains(' '));
+        assert_eq!(base64encode("1 AND 1=1"), "MSBBTkQgMT0x");
+        assert_eq!(base64encode("AB"), "QUI=");
+        assert_eq!(base64encode("A"), "QQ==");
     }
 }
