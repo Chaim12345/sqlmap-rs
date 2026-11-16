@@ -37,7 +37,7 @@ verbatim upstream inputs/expectations.
 | test_dialectdbms.py | operator/typing dialect heuristics | partial - our fingerprinting is narrower |
 | test_settings_regex.py | DBMS error banners, WAF signature regexes | open - our error-based detection and waf.rs carry ported signatures |
 | test_heuristic_signatures.py | non-SQL heuristic signatures | partial - our heuristics are narrower |
-| test_crawler.py | crawl normalization/dedup | open - our crawl.rs |
+| [test_crawler.py](https://github.com/sqlmapproject/sqlmap/blob/8b78b676c1376ae28feccd957b03bbecea05eff1/tests/test_crawler.py) | crawl target dedup shapes | **partial**: `crates/sqlmap-http/tests/upstream_crawler.rs` - 4/5 cases adapted exactly (value-collapse, distinct endpoints, param names, hosts). Our crawler previously scanned every value variant; dedup_targets now collapses them like upstream. POST-body folding not adapted: our crawler is GET-only |
 | test_urls.py / test_targeturl.py | URL encode/decode, parameter handling | open - our params module |
 | test_target_parsing.py | target option plumbing | partial - only implemented options |
 | test_payload_marking.py | injection-point markers in bodies | partial - our `-r`/body parsing |

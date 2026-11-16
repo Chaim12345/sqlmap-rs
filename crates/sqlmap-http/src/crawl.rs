@@ -126,7 +126,31 @@ pub fn crawl(client: &Client, start_url: &str, max_depth: u8, threads: usize) ->
         }
         frontier = next;
     }
-    pages
+    dedup_targets(pages)
+}
+
+/// sqlmap crawler target dedup (tests/test_crawler.py): scan targets that
+/// differ only in parameter VALUES collapse to one; distinct paths, distinct
+/// parameter names and distinct hosts are all kept. (Our crawler is GET-only
+/// and same-host, so upstream's POST-body folding and host cases collapse to
+/// the same shape function.)
+pub fn dedup_targets(pages: Vec<CrawledPage>) -> Vec<CrawledPage> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for page in pages {
+        if seen.insert(shape(&page.url)) {
+            out.push(page);
+        }
+    }
+    out
+}
+
+fn shape(url: &str) -> String {
+    let (base, query) = crate::params::split_url(url);
+    let mut names: Vec<String> = query.into_iter().map(|(n, _)| n).collect();
+    names.sort();
+    names.dedup();
+    format!("{}?{}", base, names.join("&"))
 }
 
 #[cfg(test)]
