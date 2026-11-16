@@ -9,6 +9,7 @@ license.workspace = true
 sqlmap-tamper = { path = "../sqlmap-tamper" }
 sqlmap-core = { path = "../sqlmap-core" }
 ureq = { version = "2", features = ["cookies", "gzip", "socks-proxy"] }
+base64 = "0.22"
 url = "2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

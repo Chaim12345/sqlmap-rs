@@ -33,6 +33,12 @@ pub struct Client {
     /// Headers injected by header-based tamper scripts (xforwardedfor,
     /// varnish). Applied to every request; explicit spec.headers win.
     tamper_headers: Vec<(String, String)>,
+    /// Proxy-Authorization header for plain-HTTP proxying. ureq only sends
+    /// proxy credentials inside an https CONNECT (and natively for SOCKS
+    /// password auth), so for http:// proxies with userinfo we add the
+    /// header to every request ourselves. Never set for SOCKS proxies,
+    /// where it would leak the proxy credentials to the origin.
+    proxy_auth: Option<String>,
     /// Session cookie jar (port of sqlmap's Set-Cookie tracking in
     /// `lib/request/connect.py`: unless --ignore-set-cookie, every response's
     /// Set-Cookie updates the cookies sent on later requests). Mutex because
@@ -48,6 +54,7 @@ impl Client {
         if !conf.follow_redirects {
             builder = builder.redirects(0);
         }
+        let mut proxy_auth = None;
         if let Some(proxy) = &conf.proxy {
             // Fail loudly: silently dropping --proxy would leak requests the
             // user meant to route through it.
@@ -64,6 +71,19 @@ impl Client {
             }
             let proxy = ureq::Proxy::new(proxy_url.as_str())
                 .unwrap_or_else(|e| panic!("invalid --proxy {proxy_url}: {e}"));
+            if proxy_url.starts_with("http://") || !proxy_url.contains("://") {
+                if let Some(userinfo) = proxy_url
+                    .split_once("://")
+                    .and_then(|(_, rest)| rest.split_once('@'))
+                    .map(|(u, _)| u.to_string())
+                {
+                    use base64::Engine;
+                    proxy_auth = Some(format!(
+                        "Basic {}",
+                        base64::engine::general_purpose::STANDARD.encode(userinfo)
+                    ));
+                }
+            }
             builder = builder.proxy(proxy);
         }
         // Seed the jar from --cookie so those cookies persist alongside
@@ -84,6 +104,7 @@ impl Client {
             follow_redirects: conf.follow_redirects,
             ignore_set_cookies: conf.ignore_set_cookies,
             tamper_headers: sqlmap_tamper::header_mutations(&conf.tampers, 0xC0FFEE),
+            proxy_auth,
             jar: std::sync::Mutex::new(jar),
         }
     }
@@ -138,6 +159,9 @@ impl Client {
             _ => self.agent.get(&spec.url),
         };
         req = req.set("User-Agent", &self.user_agent);
+        if let Some(h) = &self.proxy_auth {
+            req = req.set("Proxy-Authorization", h);
+        }
         for (k, v) in &self.tamper_headers {
             req = req.set(k, v);
         }

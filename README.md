@@ -80,8 +80,9 @@ push.
   RANDOMBLOB LIKEs this port does not emulate)
 - A handful of upstream tamper scripts deliberately skipped (greatest,
   plus2concat/plus2fnconcat, securesphere; reasons in the tamper crate docs)
-- Proxy auth/SOCKS and proxying HTTPS targets
-  (`--proxy` covers plain HTTP CONNECT-less relays)
+- Proxying HTTPS targets (`--proxy` covers plain HTTP proxies, Basic proxy
+  auth via `--proxy-cred` or userinfo in the proxy URL, and SOCKS4/4A/5 via
+  `socks5://...` proxy URLs; ureq only uses CONNECT for https targets)
 - The session store is a per-target JSON cache, not sqlmap's sqlite schema
 
 The boundary between ported and not-ported is enforced by the code: the engine
