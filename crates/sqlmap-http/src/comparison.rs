@@ -90,6 +90,69 @@ pub fn filtered_page(body: &str) -> String {
     out
 }
 
+/// Port of upstream lib/core/common.py jsonMinimize: an order-independent
+/// canonical "leaf-path" projection of a JSON document. Sorted object keys
+/// make key order and whitespace irrelevant; array length and indices are
+/// kept so result-set changes register; scalar values render Python-str
+/// style (null -> None, true/false -> True/False) so byte-exact upstream
+/// pins hold. None only when the content is not parseable JSON, so callers
+/// fall back to text comparison. Deep nesting past serde_json's recursion
+/// limit errors out as None, mirroring upstream's RecursionError handling.
+pub fn json_minimize(content: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let mut lines = Vec::new();
+    walk_json(&value, String::new(), &mut lines);
+    lines.sort();
+    Some(lines.join("\n"))
+}
+
+fn walk_json(value: &serde_json::Value, path: String, lines: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for key in keys {
+                walk_json(&map[key], format!("{path}.{key}"), lines);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            lines.push(format!("{path}.__len__={}", items.len()));
+            for (i, item) in items.iter().enumerate() {
+                walk_json(item, format!("{path}[{i}]"), lines);
+            }
+        }
+        serde_json::Value::Null => lines.push(format!("{path}=None")),
+        serde_json::Value::Bool(b) => {
+            lines.push(format!("{path}={}", if *b { "True" } else { "False" }))
+        }
+        serde_json::Value::Number(n) => lines.push(format!("{path}={n}")),
+        serde_json::Value::String(s) => lines.push(format!("{path}={s}")),
+    }
+}
+
+/// Content-Type gate for the structured oracle (upstream comparison.py):
+/// application/json and any structured +json suffix opt in.
+pub fn is_json_content_type(content_type: &str) -> bool {
+    let ct = content_type.to_ascii_lowercase();
+    ct.contains("application/json") || ct.contains("+json")
+}
+
+/// Structure-aware comparison: when the response declares JSON and both
+/// bodies parse, the ratio runs over the json_minimize projections (key
+/// reorder / whitespace noise stops perturbing it, small value changes in
+/// large bodies stop drowning). Any non-JSON or unparseable case falls
+/// back to the exact text behavior, leaving the HTML oracle untouched.
+pub fn ratio_aware(a: &str, b: &str, content_type: Option<&str>) -> f64 {
+    if let Some(ct) = content_type {
+        if is_json_content_type(ct) {
+            if let (Some(ma), Some(mb)) = (json_minimize(a), json_minimize(b)) {
+                return ratio(&ma, &mb);
+            }
+        }
+    }
+    ratio(&filtered_page(a), &filtered_page(b))
+}
+
 /// Marker replacing reflected payload forms before comparison
 /// (same token as upstream lib/core/settings.py REFLECTED_VALUE_MARKER).
 pub const REFLECTED_VALUE_MARKER: &str = "__REFLECTED_VALUE__";

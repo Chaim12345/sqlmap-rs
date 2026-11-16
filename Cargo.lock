@@ -682,6 +682,7 @@ dependencies = [
  "base64",
  "regex",
  "serde",
+ "serde_json",
  "sqlmap-core",
  "sqlmap-tamper",
  "ureq",

@@ -4,7 +4,7 @@ use sqlmap_core::config::{Config, Place, Technique};
 use sqlmap_core::injection::{Boundary, Injection};
 use sqlmap_core::kb::KnowledgeBase;
 use sqlmap_http::client::{Client, RequestSpec, Response};
-use sqlmap_http::comparison::{filtered_page, ratio, strip_reflection};
+use sqlmap_http::comparison::{filtered_page, ratio, ratio_aware, strip_reflection};
 use sqlmap_http::params::{self, Param};
 use sqlmap_payloads as pl;
 use std::time::Duration;
@@ -42,6 +42,14 @@ fn rand_str(seed: u64) -> String {
         s.push((b'a' + (x % 26) as u8) as char);
     }
     s
+}
+
+/// Response Content-Type, if the server sent one.
+fn content_type_of(resp: &sqlmap_http::client::Response) -> Option<&str> {
+    resp.headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.as_str())
 }
 
 impl<'a> Engine<'a> {
@@ -298,7 +306,15 @@ impl<'a> Engine<'a> {
                 } else {
                     strip_reflection(orig_page, &param.value)
                 };
-                let true_ratio = ratio(&orig_cmp, &true_page);
+                // Structure-aware oracle (port of comparison.py's JSON path):
+                // a JSON Content-Type switches the ratio to the json_minimize
+                // projection; anything else is the exact text path.
+                let true_ct = content_type_of(&true_resp);
+                let true_ratio = if true_ct.is_some() {
+                    ratio_aware(&orig_cmp, &strip_reflection(&true_resp.body, &true_val), true_ct)
+                } else {
+                    ratio(&orig_cmp, &true_page)
+                };
                 if true_ratio < threshold {
                     continue;
                 }
@@ -308,7 +324,16 @@ impl<'a> Engine<'a> {
                     Err(_) => continue,
                 };
                 let false_page = filtered_page(&strip_reflection(&false_resp.body, &false_val));
-                let false_ratio = ratio(&true_page, &false_page);
+                let false_ct = content_type_of(&false_resp);
+                let false_ratio = if false_ct.is_some() {
+                    ratio_aware(
+                        &strip_reflection(&true_resp.body, &true_val),
+                        &strip_reflection(&false_resp.body, &false_val),
+                        false_ct,
+                    )
+                } else {
+                    ratio(&true_page, &false_page)
+                };
                 if false_ratio < threshold {
                     self.say(format!(
                         "  INJECTABLE (boolean): '{}' with {} [{}], true_ratio={true_ratio:.3} false_ratio={false_ratio:.3}",
