@@ -386,6 +386,14 @@ class Handler(BaseHTTPRequestHandler):
                     "</head><body><h1>Sorry, you have been blocked</h1>"
                     "</body></html>"
                 )
+        elif u.path == "/rot":
+            # Rotates the session id, like a real app re-issuing cookies.
+            extra_headers = [("Set-Cookie", "sid=rotated99; Path=/")]
+        elif u.path == "/whoami":
+            cookies = dict(
+                c.strip().split("=", 1) for c in (self.headers.get("Cookie") or "").split(";") if "=" in c
+            )
+            page = "<html><body>sid:" + cookies.get("sid", "none") + "</body></html>"
         elif u.path == "/search":
             page = (
                 "<html><body>"

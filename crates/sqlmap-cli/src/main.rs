@@ -114,6 +114,10 @@ struct Args {
     /// Identify a WAF/IPS in front of the target (sqlmap --identify-waf)
     #[arg(long)]
     identify_waf: bool,
+
+    /// Do not update session cookies from Set-Cookie responses (sqlmap --ignore-set-cookie)
+    #[arg(long)]
+    ignore_set_cookie: bool,
 }
 
 fn main() {
@@ -144,6 +148,7 @@ fn main() {
         crawl_depth: args.crawl,
         threads: args.threads.max(1),
         identify_waf: args.identify_waf,
+        ignore_set_cookies: args.ignore_set_cookie,
         ..Config::default()
     };
 

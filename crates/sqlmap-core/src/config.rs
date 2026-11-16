@@ -80,6 +80,9 @@ pub struct Config {
     /// Identify a WAF/IPS in front of the target before scanning
     /// (sqlmap --identify-waf).
     pub identify_waf: bool,
+    /// Do not update the session cookie jar from Set-Cookie responses
+    /// (sqlmap --ignore-set-cookie).
+    pub ignore_set_cookies: bool,
 }
 
 impl Config {
@@ -123,6 +126,7 @@ impl Default for Config {
             crawl_depth: 0,
             threads: 4,
             identify_waf: false,
+            ignore_set_cookies: false,
         }
     }
 }
