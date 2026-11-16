@@ -338,8 +338,54 @@ pub fn overlongutf8(payload: &str) -> String {
     out
 }
 
+
+/// Case-insensitive whole-word replacement shared by the keyword tampers.
+fn replace_word(payload: &str, word: &str, replacement: &str) -> String {
+    let upper = payload.to_ascii_uppercase();
+    let pb = upper.as_bytes();
+    let wb = word.as_bytes();
+    let src: Vec<char> = payload.chars().collect();
+    let mut out = String::with_capacity(payload.len());
+    let mut i = 0;
+    while i < pb.len() {
+        let at_word_start = i == 0 || !pb[i - 1].is_ascii_alphanumeric();
+        if at_word_start
+            && pb[i..].starts_with(wb)
+            && (i + wb.len() >= pb.len() || !pb[i + wb.len()].is_ascii_alphanumeric())
+        {
+            out.push_str(replacement);
+            i += wb.len();
+        } else {
+            out.push(src[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// tamper/symboliclogical.py: AND -> &&, OR -> || (whole words).
+pub fn symboliclogical(payload: &str) -> String {
+    replace_word(&replace_word(payload, "AND", "&&"), "OR", "||")
+}
+
+/// tamper/uppercase.py: payload to upper case.
+pub fn uppercase(payload: &str) -> String {
+    payload.to_ascii_uppercase()
+}
+
+/// tamper/versionedmorekeywords.py (MySQL-specific): wrap each SQL keyword
+/// in its executable versioned comment /*!50000<KEYWORD>*/.
+pub fn versionedmorekeywords(payload: &str) -> String {
+    const KEYWORDS: [&str; 8] = ["AND", "OR", "SELECT", "WHERE", "UNION", "ORDER", "BY", "SLEEP"];
+    let mut out = payload.to_string();
+    for kw in KEYWORDS {
+        out = replace_word(&out, kw, &format!("/*!50000{kw}*/"));
+    }
+    out
+}
+
 /// Names understood by the engine (sqlmap --tamper values).
-pub const AVAILABLE: [&str; 19] = [
+pub const AVAILABLE: [&str; 22] = [
     "space2comment",
     "space2plus",
     "space2hash",
@@ -359,6 +405,9 @@ pub const AVAILABLE: [&str; 19] = [
     "nonrecursivereplacement",
     "appendnullbyte",
     "overlongutf8",
+    "symboliclogical",
+    "uppercase",
+    "versionedmorekeywords",
 ];
 
 /// Apply named tampers in order (sqlmap applies them in the order given).
@@ -386,6 +435,9 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
             "nonrecursivereplacement" => nonrecursivereplacement(&out),
             "appendnullbyte" => appendnullbyte(&out),
             "overlongutf8" => overlongutf8(&out),
+            "symboliclogical" => symboliclogical(&out),
+            "uppercase" => uppercase(&out),
+            "versionedmorekeywords" => versionedmorekeywords(&out),
             other => return Err(format!("unknown tamper script: {other} (available: {AVAILABLE:?})")),
         };
     }
@@ -395,6 +447,30 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symboliclogical_swaps_whole_words() {
+        assert_eq!(symboliclogical("AND 1=1 OR 2=2"), "&& 1=1 || 2=2");
+        // word boundaries: ORDER and ANDY are not replaced
+        assert_eq!(symboliclogical("ORDER BY andy AND 1=1"), "ORDER BY andy && 1=1");
+    }
+
+    #[test]
+    fn uppercase_upcases() {
+        assert_eq!(uppercase("and Sleep(2)"), "AND SLEEP(2)");
+    }
+
+    #[test]
+    fn versionedmorekeywords_wraps_keywords() {
+        assert_eq!(
+            versionedmorekeywords("AND 1=1"),
+            "/*!50000AND*/ 1=1"
+        );
+        assert_eq!(
+            versionedmorekeywords("UNION SELECT 1"),
+            "/*!50000UNION*/ /*!50000SELECT*/ 1"
+        );
+    }
 
     #[test]
     fn space2comment_replaces() {

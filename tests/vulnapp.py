@@ -283,6 +283,10 @@ def eval_value(value: str, quoted: bool = False, legacy: bool = False) -> str:
     """
     value = value.replace("/**/", " ")
     value = re.sub(r"#[^\n]*(\n|$)", " ", value)  # MySQL '#' comment
+    # Executable versioned comments: /*!50000KEYWORD*/ runs as KEYWORD.
+    value = re.sub(r"/\*!\d*(\w+)\*/", r"\1", value)
+    # Symbolic logical operators are MySQL aliases for AND/OR.
+    value = value.replace("&&", " AND ").replace("||", " OR ")
     full = ("'" + value + "'") if quoted else value
     full = strip_dash_comments(full)
     # Error-based: ExtractValue(1,CONCAT(0x7e,<marker>)) echoes the marker.
