@@ -231,6 +231,12 @@ impl<'a> BlindExtractor<'a> {
     }
 
     fn list_columns(&mut self, db: &str, table: &str) -> Option<Vec<String>> {
+        // SQLite has no column catalog: recover the CREATE statement and
+        // parse it (upstream's sqlite plugin does the same client-side).
+        if let Some(ddl_q) = self.qs.sqlite_ddl_select(table) {
+            let ddl = self.infer_string(&ddl_q)?;
+            return Some(crate::queries::parse_columns_from_ddl(&ddl));
+        }
         let n = self.infer_count(&self.qs.columns_count(db, table))?;
         let mut out = Vec::new();
         for i in 0..n {
@@ -542,13 +548,18 @@ impl<'a> UnionExtractor<'a> {
         if self.conf.enum_columns || self.conf.dump {
             match (self.conf.target_db.clone(), self.conf.target_table.clone()) {
                 (Some(db), Some(table)) => {
-                    let cols = self
-                        .query_scalar(
-                            echo,
-                            &self.qs.columns_agg(&db, &table),
-                        )
-                        .map(|v| v.split(':').filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>())
-                        .unwrap_or_default();
+                    let cols = match self.qs.sqlite_ddl_select(&table) {
+                        // SQLite: one round trip for the CREATE statement,
+                        // then a client-side parse (as upstream).
+                        Some(ddl_q) => self
+                            .query_scalar(echo, &ddl_q)
+                            .map(|ddl| crate::queries::parse_columns_from_ddl(&ddl))
+                            .unwrap_or_default(),
+                        None => self
+                            .query_scalar(echo, &self.qs.columns_agg(&db, &table))
+                            .map(|v| v.split(':').filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>())
+                            .unwrap_or_default(),
+                    };
                     self.log.push(format!("  {db}.{table}: {}", cols.join(", ")));
                     if self.conf.enum_columns {
                         en.columns.push(ColumnEntry {

@@ -123,6 +123,47 @@ def eval_scalar(q):
         rows = ROWS.get((m.group(2).lower(), m.group(3).lower()), [])
         i = int(m.group(4))
         return ":".join(rows[i]) if i < len(rows) else ""
+    # SQLite catalog shapes (the emulator answers them against the same fake
+    # state; the CREATE statements are synthesized from COLUMNS).
+    all_tables = sorted({t for tables in TABLES.values() for t in tables})
+    if re.fullmatch(r"SELECT 'main'", q, re.I):
+        return "main"
+    if re.fullmatch(r"SELECT COUNT\(\*\) FROM \(SELECT 'main' AS schema_name\)", q, re.I):
+        return 1
+    if re.fullmatch(r"SELECT COUNT\(name\) FROM sqlite_master WHERE type='table'", q, re.I):
+        return len(all_tables)
+    m = re.fullmatch(r"SELECT GROUP_CONCAT\(name,':'\) FROM sqlite_master WHERE type='table'", q, re.I)
+    if m:
+        return ":".join(all_tables)
+    m = re.fullmatch(r"SELECT name FROM sqlite_master WHERE type='table' LIMIT 1 OFFSET (\d+)", q, re.I)
+    if m:
+        i = int(m.group(1))
+        return all_tables[i] if i < len(all_tables) else ""
+    m = re.fullmatch(r"SELECT sql FROM sqlite_master WHERE type='table' AND name=(\S+)", q, re.I)
+    if m:
+        name = name_token(m.group(1))
+        for (db, table), cols in COLUMNS.items():
+            if table.lower() == name.lower():
+                return "CREATE TABLE %s (%s)" % (table, ", ".join(c + " TEXT" for c in cols))
+        return ""
+    m = re.fullmatch(r"SELECT COUNT\(\*\) FROM (\w+)", q, re.I)
+    if m:
+        for (db, table), rows in ROWS.items():
+            if table.lower() == m.group(1).lower():
+                return len(rows)
+        return 0
+    m = re.fullmatch(r"SELECT ([\w|':]+) FROM (\w+) LIMIT 1 OFFSET (\d+)", q, re.I)
+    if m:
+        cols = [c for c in m.group(1).split("||':'||")]
+        for (db, table), rows in ROWS.items():
+            if table.lower() == m.group(2).lower():
+                i = int(m.group(3))
+                if i < len(rows):
+                    want = COLUMNS[(db, table)]
+                    idx = [want.index(c) for c in cols]
+                    return ":".join(rows[i][j] for j in idx)
+                return ""
+        return None
     return None
 
 
@@ -285,8 +326,10 @@ def eval_value(value: str, quoted: bool = False, legacy: bool = False) -> str:
     value = re.sub(r"#[^\n]*(\n|$)", " ", value)  # MySQL '#' comment
     # Executable versioned comments: /*!50000KEYWORD*/ runs as KEYWORD.
     value = re.sub(r"/\*!\d*(\w+)\*/", r"\1", value)
-    # Symbolic logical operators are MySQL aliases for AND/OR.
-    value = value.replace("&&", " AND ").replace("||", " OR ")
+    # Symbolic logical operators are MySQL aliases for AND/OR. Only the
+    # SPACED forms are treated as logical: unspaced "a||b" is the (SQLite /
+    # PIPES_AS_CONCAT) string-concat operator used by the SQLite exfil set.
+    value = value.replace(" && ", " AND ").replace(" || ", " OR ")
     full = ("'" + value + "'") if quoted else value
     full = strip_dash_comments(full)
     # Error-based: ExtractValue(1,CONCAT(0x7e,<marker>)) echoes the marker.

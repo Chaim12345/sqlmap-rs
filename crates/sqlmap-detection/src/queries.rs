@@ -24,6 +24,13 @@ pub enum Dbms {
     PostgreSql,
     MsSql,
     Oracle,
+    /// Catalog via sqlite_master; columns are recovered by parsing the
+    /// table's CREATE statement (see parse_columns_from_ddl), as upstream's
+    /// sqlite plugin does. There is no schema list: the attached database
+    /// is "main", answered by a literal one-row query. Time-based retrieval
+    /// does not apply (SQLite has no SLEEP; sqlmap relies on heavy
+    /// RANDOMBLOB LIKEs, which this port does not emulate).
+    Sqlite,
 }
 
 impl Dbms {
@@ -33,6 +40,7 @@ impl Dbms {
             "postgresql" | "pgsql" | "postgres" => Some(Self::PostgreSql),
             "mssql" | "microsoft sql server" => Some(Self::MsSql),
             "oracle" => Some(Self::Oracle),
+            "sqlite" => Some(Self::Sqlite),
             _ => None,
         }
     }
@@ -49,7 +57,7 @@ impl Dbms {
     pub fn at(&self, select: &str, i: u32) -> String {
         match self {
             Self::MySql => format!("{select} LIMIT {i},1"),
-            Self::PostgreSql => format!("{select} LIMIT 1 OFFSET {i}"),
+            Self::PostgreSql | Self::Sqlite => format!("{select} LIMIT 1 OFFSET {i}"),
             Self::MsSql => {
                 format!("{select} ORDER BY 1 OFFSET {i} ROWS FETCH NEXT 1 ROWS ONLY")
             }
@@ -64,12 +72,14 @@ impl Dbms {
         match self {
             Self::MySql => format!("GROUP_CONCAT({expr} SEPARATOR 0x3a)"),
             Self::PostgreSql | Self::MsSql => format!("STRING_AGG({expr},':')"),
+            Self::Sqlite => format!("GROUP_CONCAT({expr},':')"),
             Self::Oracle => format!("LISTAGG({expr},':') WITHIN GROUP (ORDER BY {expr})"),
         }
     }
 
     pub fn schemata_count(&self) -> String {
         match self {
+            Self::Sqlite => "SELECT COUNT(*) FROM (SELECT 'main' AS schema_name)".into(),
             Self::Oracle => "SELECT COUNT(DISTINCT owner) FROM all_tables".into(),
             _ => "SELECT COUNT(schema_name) FROM information_schema.schemata".into(),
         }
@@ -77,6 +87,7 @@ impl Dbms {
 
     pub fn schemata_select(&self) -> String {
         match self {
+            Self::Sqlite => "SELECT 'main'".into(),
             Self::Oracle => "SELECT DISTINCT owner FROM all_tables".into(),
             _ => "SELECT schema_name FROM information_schema.schemata".into(),
         }
@@ -84,6 +95,7 @@ impl Dbms {
 
     pub fn schemata_agg(&self) -> String {
         match self {
+            Self::Sqlite => "SELECT 'main'".into(),
             Self::Oracle => format!(
                 "SELECT {} FROM (SELECT DISTINCT owner AS schema_name FROM all_tables)",
                 self.agg("schema_name")
@@ -97,6 +109,7 @@ impl Dbms {
 
     pub fn tables_count(&self, db: &str) -> String {
         match self {
+            Self::Sqlite => "SELECT COUNT(name) FROM sqlite_master WHERE type='table'".into(),
             Self::Oracle => {
                 format!("SELECT COUNT(table_name) FROM all_tables WHERE owner={}", self.literal(db))
             }
@@ -109,6 +122,7 @@ impl Dbms {
 
     pub fn tables_select(&self, db: &str) -> String {
         match self {
+            Self::Sqlite => "SELECT name FROM sqlite_master WHERE type='table'".into(),
             Self::Oracle => {
                 format!("SELECT table_name FROM all_tables WHERE owner={}", self.literal(db))
             }
@@ -121,6 +135,7 @@ impl Dbms {
 
     pub fn tables_agg(&self, db: &str) -> String {
         match self {
+            Self::Sqlite => "SELECT GROUP_CONCAT(name,':') FROM sqlite_master WHERE type='table'".into(),
             Self::Oracle => format!(
                 "SELECT {} FROM all_tables WHERE owner={}",
                 self.agg("table_name"),
@@ -186,7 +201,7 @@ impl Dbms {
     /// one, so the reference is the bare table.
     fn table_ref(&self, db: &str, table: &str) -> String {
         match self {
-            Self::PostgreSql => table.to_string(),
+            Self::PostgreSql | Self::Sqlite => table.to_string(),
             Self::MsSql => format!("{db}..{table}"),
             _ => format!("{db}.{table}"),
         }
@@ -207,6 +222,75 @@ impl Dbms {
         };
         format!("SELECT {joined} FROM {}", self.table_ref(db, table))
     }
+}
+
+impl Dbms {
+    /// SQLite: the SELECT recovering a table's CREATE statement (columns are
+    /// parsed out of the DDL client-side, like upstream's sqlite plugin).
+    pub fn sqlite_ddl_select(&self, table: &str) -> Option<String> {
+        match self {
+            Self::Sqlite => Some(format!(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name={}",
+                self.literal(table)
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// Parse column names out of a CREATE TABLE statement (sqlmap's sqlite
+/// enumeration does the same client-side parse). Constraint clauses are
+/// skipped; quoted/bracketed identifiers are stripped.
+pub fn parse_columns_from_ddl(ddl: &str) -> Vec<String> {
+    let Some(open) = ddl.find('(') else { return Vec::new() };
+    let mut depth = 0;
+    let mut end = ddl.len();
+    for (i, c) in ddl[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = open + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let inner = &ddl[open + 1..end];
+    // split at top-level commas
+    let mut parts = Vec::new();
+    let mut depth = 0;
+    let mut cur = String::new();
+    for c in inner.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    if !cur.trim().is_empty() {
+        parts.push(cur);
+    }
+    parts
+        .iter()
+        .filter_map(|part| {
+            let first = part.split_whitespace().next()?;
+            if matches!(
+                first.to_ascii_uppercase().as_str(),
+                "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN" | "CONSTRAINT"
+            ) {
+                return None;
+            }
+            Some(first.trim_matches(|c| c == '"' || c == '`' || c == '[' || c == ']').to_string())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -270,6 +354,41 @@ mod tests {
         assert_eq!(Dbms::parse("PostgreSQL"), Some(Dbms::PostgreSql));
         assert_eq!(Dbms::parse("mssql"), Some(Dbms::MsSql));
         assert_eq!(Dbms::parse("oracle"), Some(Dbms::Oracle));
-        assert_eq!(Dbms::parse("sqlite"), None);
+        assert_eq!(Dbms::parse("sqlite"), Some(Dbms::Sqlite));
+        assert_eq!(Dbms::parse("access"), None);
+    }
+
+    #[test]
+    fn sqlite_set() {
+        let q = Dbms::Sqlite;
+        assert_eq!(Dbms::parse("sqlite"), Some(Dbms::Sqlite));
+        assert_eq!(q.schemata_agg(), "SELECT 'main'");
+        assert_eq!(q.tables_count("main"), "SELECT COUNT(name) FROM sqlite_master WHERE type='table'");
+        assert_eq!(q.at(&q.tables_select("main"), 1), "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1 OFFSET 1");
+        assert_eq!(q.tables_agg("main"), "SELECT GROUP_CONCAT(name,':') FROM sqlite_master WHERE type='table'");
+        assert_eq!(q.rows_count("main", "users"), "SELECT COUNT(*) FROM users");
+        assert_eq!(
+            q.at(&q.row_select("main", "users", &["id".into(), "pw".into()]), 0),
+            "SELECT id||':'||pw FROM users LIMIT 1 OFFSET 0"
+        );
+        assert_eq!(
+            q.sqlite_ddl_select("users").as_deref(),
+            Some("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'")
+        );
+        assert!(Dbms::MySql.sqlite_ddl_select("users").is_none());
+    }
+
+    #[test]
+    fn ddl_column_parsing() {
+        assert_eq!(
+            parse_columns_from_ddl("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, pw VARCHAR(40))"),
+            vec!["id", "name", "pw"]
+        );
+        assert_eq!(
+            parse_columns_from_ddl("CREATE TABLE t (a TEXT, CONSTRAINT c UNIQUE(a), b INT)"),
+            vec!["a", "b"]
+        );
+        assert_eq!(parse_columns_from_ddl(r#"CREATE TABLE d (`x` TEXT, [y] INT, "z" REAL)"#), vec!["x", "y", "z"]);
+        assert!(parse_columns_from_ddl("not ddl").is_empty());
     }
 }
