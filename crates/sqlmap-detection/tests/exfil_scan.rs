@@ -189,3 +189,44 @@ fn union_channel_dumps_table() {
         "UNION channel must recover every row"
     );
 }
+
+#[test]
+fn union_channel_pooled_matches_single_threaded() {
+    // The UNION extractor's echo-position probes, per-database table lists
+    // and dump row fetches run through the worker pool. Whatever the thread
+    // count, the recovered data must be byte-for-byte identical.
+    let app = VulnApp::start(8757);
+    let base = app.url("/get?id=1");
+    let run = |threads: usize| {
+        let conf = Config {
+            target_url: base.clone(),
+            enum_tables: true,
+            enum_columns: true,
+            dump: true,
+            target_db: Some("shop".into()),
+            target_table: Some("users".into()),
+            threads,
+            ..Config::default()
+        };
+        let client = Client::new(&conf);
+        sqlmap_detection::Engine::new(&client, &conf).scan().kb
+    };
+    let pooled = run(8);
+    let serial = run(1);
+    assert_eq!(pooled.enumeration.tables, serial.enumeration.tables);
+    assert_eq!(pooled.enumeration.dumps, serial.enumeration.dumps);
+    let dump = &pooled.enumeration.dumps[0];
+    assert_eq!(
+        dump.rows,
+        vec![
+            vec!["1", "admin", "s3cr3t-pass"],
+            vec!["2", "alice", "hunter2"],
+            vec!["3", "bob", "qwerty"],
+        ],
+        "pooled UNION dump must recover every row in order"
+    );
+    assert_eq!(
+        pooled.enumeration.tables.get("shop").map(Vec::as_slice),
+        Some(&["products".to_string(), "users".to_string()][..]),
+    );
+}

@@ -16,7 +16,7 @@ pub struct KnowledgeBase {
 }
 
 /// Enumeration/exfiltration results (port of sqlmap `kb.data` outputs).
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Enumeration {
     pub databases: Vec<String>,
     /// Database name -> table names.
@@ -31,14 +31,14 @@ impl Enumeration {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnEntry {
     pub db: String,
     pub table: String,
     pub columns: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableDump {
     pub db: String,
     pub table: String,

