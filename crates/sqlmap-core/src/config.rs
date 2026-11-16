@@ -83,9 +83,12 @@ pub struct Config {
     /// Do not update the session cookie jar from Set-Cookie responses
     /// (sqlmap --ignore-set-cookie).
     pub ignore_set_cookies: bool,
-    /// Route requests through this HTTP proxy, e.g. http://127.0.0.1:8080
-    /// (sqlmap --proxy).
+    /// Route requests through this proxy, e.g. http://127.0.0.1:8080 or
+    /// socks5://127.0.0.1:1080 (sqlmap --proxy).
     pub proxy: Option<String>,
+    /// Credentials for an authenticating proxy, as user:pass; injected into
+    /// the proxy URL when it carries no userinfo (sqlmap --proxy-cred).
+    pub proxy_cred: Option<String>,
     /// Session file for resumable scans (sqlmap -s/--session).
     pub session_file: Option<String>,
     /// Ignore and overwrite the session file (sqlmap --flush-session).
@@ -135,6 +138,7 @@ impl Default for Config {
             identify_waf: false,
             ignore_set_cookies: false,
             proxy: None,
+            proxy_cred: None,
             session_file: None,
             flush_session: false,
         }

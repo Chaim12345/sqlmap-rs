@@ -51,8 +51,19 @@ impl Client {
         if let Some(proxy) = &conf.proxy {
             // Fail loudly: silently dropping --proxy would leak requests the
             // user meant to route through it.
-            let proxy = ureq::Proxy::new(proxy.as_str())
-                .unwrap_or_else(|e| panic!("invalid --proxy {proxy}: {e}"));
+            let mut proxy_url = proxy.clone();
+            if let Some(cred) = &conf.proxy_cred {
+                // --proxy-cred supplies the userinfo when the URL has none.
+                if !proxy_url.rsplit('/').next().unwrap_or_default().contains('@') {
+                    let (scheme, rest) = proxy_url
+                        .split_once("://")
+                        .map(|(a, b)| (format!("{a}://"), b.to_string()))
+                        .unwrap_or_default();
+                    proxy_url = format!("{scheme}{cred}@{rest}");
+                }
+            }
+            let proxy = ureq::Proxy::new(proxy_url.as_str())
+                .unwrap_or_else(|e| panic!("invalid --proxy {proxy_url}: {e}"));
             builder = builder.proxy(proxy);
         }
         // Seed the jar from --cookie so those cookies persist alongside
