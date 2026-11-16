@@ -488,6 +488,28 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif u.path == "/get":
             page = eval_value(unquote_plus(params.get("id", "1")))
+        elif u.path == "/jit":
+            # Jitter fixture: same boolean emulation as /get, but every 4th
+            # request returns a transient 503 junk page (a "gateway blip"
+            # interstitial) - the "shitty response" catalog upstream's
+            # jitter harness simulates. Deterministic per process.
+            Handler.jit_count = getattr(Handler, "jit_count", 0) + 1
+            if Handler.jit_count % 4 == 0:
+                self.send_response(503)
+                # long, distinctive interstitial: it must resemble NEITHER
+                # the true nor the false page model (tiny junk pages look
+                # like "No results" to a text ratio - the trap upstream's
+                # jitter harness calls out)
+                blip = ("<html><head><title>Acme Gateway</title></head><body>"
+                        "<h1>503 Service Unavailable</h1><p>gateway blip - please wait</p>"
+                        "<div>maintenance window retry backoff queue worker shard replica</div>" * 12
+                        + "</body></html>")
+                body = blip.encode()
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            page = eval_value(unquote_plus(params.get("id", "1")))
         elif u.path == "/legacy":
             page = eval_value(unquote_plus(params.get("id", "1")), legacy=True)
         elif u.path == "/item":

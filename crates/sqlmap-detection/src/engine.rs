@@ -175,10 +175,20 @@ impl<'a> Engine<'a> {
                 "enumerating via blind inference on '{}' ({:?})",
                 param.name, param.place
             ));
-            let orig = match self.fetch(&self.build_request(&param, &param.value)) {
-                Ok(r) => r,
-                Err(e) => {
-                    self.say(format!("enumeration aborted: baseline refetch failed: {e}"));
+            // The blind true model is the plain baseline page; fetch it
+            // jitter-stable (two consecutive agreeing responses) so a
+            // transient junk page cannot poison every later comparison.
+            let baseline_val = param.value.clone();
+            let true_model = match crate::exfil::stable_page(
+                self.client,
+                self.conf,
+                &param,
+                &baseline_val,
+                self.conf.page_ratio_threshold,
+            ) {
+                Some(p) => p,
+                None => {
+                    self.say("enumeration aborted: baseline refetch failed".to_string());
                     return;
                 }
             };
@@ -188,7 +198,7 @@ impl<'a> Engine<'a> {
                 self.conf,
                 param,
                 inj,
-                filtered_page(&orig.body),
+                true_model,
                 self.conf.page_ratio_threshold,
                 signal,
             );
