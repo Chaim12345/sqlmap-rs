@@ -242,6 +242,25 @@ def union_page(vals):
     )
 
 
+def strip_dash_comments(s):
+    """MySQL '--' comments: '--' + whitespace starts a comment that runs to
+    the end of the line (not past it). Returns the statement with comments
+    replaced by a single space. Handles space2mysqldash's --%0A sequences."""
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i : i + 2] == "--" and i + 2 < len(s) and s[i + 2].isspace():
+            j = i + 2
+            while j < len(s) and s[j] != "\n":
+                j += 1
+            out.append(" ")
+            i = j  # the newline itself survives (it terminates the comment)
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
 def compare(value, op, num):
     if op == ">":
         return value > num
@@ -263,9 +282,7 @@ def eval_value(value: str, quoted: bool = False) -> str:
     value = value.replace("/**/", " ")
     value = re.sub(r"#[^\n]*\n", " ", value)  # MySQL '#' comment (tamper space2hash)
     full = ("'" + value + "'") if quoted else value
-    m = re.search(r"--\s", full)
-    if m:
-        full = full[: m.start()]
+    full = strip_dash_comments(full)
     # Error-based: ExtractValue(1,CONCAT(0x7e,<marker>)) echoes the marker.
     m = re.search(r"ExtractValue\(1,\s*CONCAT\(0x7e,\s*([A-Za-z0-9]+)\)\)", full, re.I)
     if m:

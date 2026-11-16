@@ -179,6 +179,24 @@ fn level3_finds_user_agent_injection() {
 }
 
 #[test]
+fn tamper_space2mysqldash_still_detects() {
+    // space2mysqldash turns spaces into --%0A line comments; detection must
+    // still succeed (MySQL treats the comment's newline as its terminator).
+    let app = VulnApp::start(8745);
+    let conf = Config {
+        target_url: app.url("/get?id=1"),
+        techniques: vec![Technique::Boolean],
+        tampers: vec!["space2mysqldash".into()],
+        ..Config::default()
+    };
+    let kb = scan(&conf);
+    assert!(
+        kb.injections.iter().any(|i| i.technique == Technique::Boolean),
+        "boolean injection must be found through the space2mysqldash tamper"
+    );
+}
+
+#[test]
 fn clean_param_reports_nothing() {
     let app = VulnApp::start(8743);
     // /other has no params at all - engine must report no testables, not crash.

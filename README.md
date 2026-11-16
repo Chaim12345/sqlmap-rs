@@ -48,7 +48,7 @@ push.
 | `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py` | ported (subset) |
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 head entries) |
-| `sqlmap-tamper` | `tamper/*.py` | partial: 10 scripts |
+| `sqlmap-tamper` | `tamper/*.py` | partial: 19 scripts |
 | `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py`, `lib/techniques/union/use.py` | ported: boolean, error-based, time-based; UNION (column probing + data retrieval); exfiltration `--dbs/--tables/--columns/--dump` over both channels |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
@@ -58,7 +58,7 @@ push.
 - Stacked-queries and inline-query techniques
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
   the information_schema queries used by --dbs/--dump are MySQL-flavored)
-- The remaining ~60 tamper scripts, WAF identification, session persistence,
+- The remaining ~50 tamper scripts, WAF identification, session persistence,
   multi-target modes, crawling, forms auto-discovery, proxy support, threading
 
 The boundary between ported and not-ported is enforced by the code: the engine
