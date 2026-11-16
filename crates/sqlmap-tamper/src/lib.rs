@@ -58,22 +58,185 @@ pub fn randomcase(payload: &str, rng: &mut Rng) -> String {
         .collect()
 }
 
-/// tamper/between.py: '>' -> 'NOT BETWEEN 0 AND', '=' -> 'BETWEEN x AND'
-/// (upstream: ">" replaced by "NOT BETWEEN 0 AND #" and "=" by
-/// "BETWEEN # AND #"; the # marker carries the original right operand - a
-/// full-fidelity port needs token parsing, so we implement the common case:
-/// comparisons of the form `a=b` and `a>b` inside the payload).
+/// tamper/between.py: '>' -> 'NOT BETWEEN 0 AND', '=' -> 'BETWEEN x AND x'.
+/// Port of upstream's operand-aware rewrite: the last AND/OR-anchored
+/// comparison is rewritten keeping both operands (so `A > B` becomes
+/// `A NOT BETWEEN 0 AND B` and `a=b` becomes `a BETWEEN b AND b`), with
+/// upstream's guards against compound operators (>=, <>, !=) and
+/// comma-carrying calls like BENCHMARK(..), plus the WHEN-anchored pass
+/// for expression-position payloads. Pinned by upstream's own doctest
+/// cases in tests/upstream_cases.rs.
 pub fn between(payload: &str) -> String {
-    let mut out = String::with_capacity(payload.len() * 2);
-    let mut chars = payload.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '>' => out.push_str(" NOT BETWEEN 0 AND "),
-            '=' => out.push_str(" BETWEEN 0 AND "),
-            _ => out.push(c),
+    /// Last word-bounded, case-insensitive AND/OR occurrence: (start, end_of_keyword).
+    fn last_logical(s: &str) -> Option<(usize, usize)> {
+        let bytes = s.as_bytes();
+        let word = |i: usize| -> bool {
+            i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+        };
+        let mut found = None;
+        let mut i = 0;
+        while i + 1 < bytes.len() {
+            for kw in ["and", "or"] {
+                if i + kw.len() <= bytes.len()
+                    && s[i..i + kw.len()].eq_ignore_ascii_case(kw)
+                    && (i == 0 || !word(i - 1))
+                    && !word(i + kw.len())
+                {
+                    found = Some((i, i + kw.len()));
+                    i += kw.len();
+                    break;
+                }
+            }
+            i += 1;
+        }
+        found
+    }
+
+    /// First `>` / `=` in `s` not part of a compound operator: for gt, not
+    /// preceded by '<' and not followed by '='; for eq, not preceded by
+    /// '<', '>' or '!' and not followed by '='.
+    fn find_op(s: &str, gt: bool) -> Option<usize> {
+        let bytes = s.as_bytes();
+        let want = if gt { b'>' } else { b'=' };
+        for i in 0..bytes.len() {
+            if bytes[i] == want {
+                let prev_ok = if gt {
+                    i == 0 || bytes[i - 1] != b'<'
+                } else {
+                    i == 0 || !matches!(bytes[i - 1], b'<' | b'>' | b'!')
+                };
+                let next_ok = i + 1 >= bytes.len() || bytes[i + 1] != b'=';
+                if prev_ok && next_ok {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    let mut ret = payload.to_string();
+
+    // 1. AND/OR-anchored `>` rewrite: "AND A > B" -> "AND A NOT BETWEEN 0 AND B".
+    if let Some((kw_start, kw_end)) = last_logical(&ret) {
+        let rest = &ret[kw_end..];
+        if !rest.contains('>') {
+            // no `>` to rewrite; fall through
+        } else if let Some(op) = find_op(rest, true) {
+            let left = rest[..op].trim();
+            let right = rest[op + 1..].trim();
+            if !left.is_empty() && !right.is_empty() && !right.contains('>') {
+                let kw = &ret[kw_start..kw_end];
+                ret = format!("{}{} {} NOT BETWEEN 0 AND {}", &ret[..kw_start], kw, left, right);
+            }
         }
     }
-    out
+
+    // 2. Fallback `>` rewrite for simple right operands (digits, quoted, fn(digits)).
+    if ret == payload {
+        if let Some(op) = find_op(&ret, true) {
+            let right = ret[op + 1..].trim_start();
+            let end = {
+                let b = right.as_bytes();
+                if b.first() == Some(&b'\'') {
+                    right[1..].find('\'').map(|j| j + 2)
+                } else if b.iter().all(|c| c.is_ascii_digit()) && !b.is_empty() {
+                    Some(b.len())
+                } else {
+                    // \w+\(\d+\)
+                    let name_end = b.iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
+                    if name_end > 0 && b.get(name_end) == Some(&b'(') {
+                        let digits = b[name_end + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+                        if digits > 0 && b.get(name_end + 1 + digits) == Some(&b')') {
+                            Some(name_end + 2 + digits)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(end) = end {
+                let operand = &right[..end];
+                let after = &right[end..];
+                let prefix = ret[..op].trim_end().to_string();
+                ret = format!("{} NOT BETWEEN 0 AND {}{}", prefix, operand, after);
+            }
+        }
+    }
+
+    // 3. AND/OR-anchored `=` rewrite: "AND a=b" -> "AND a BETWEEN b AND b".
+    if ret == payload {
+        if let Some((kw_start, kw_end)) = last_logical(&ret) {
+            let rest = &ret[kw_end..];
+            if let Some(op) = find_op(rest, false) {
+                let left = rest[..op].trim();
+                // right operand: [\w()]+ with balanced parens
+                let after = &rest[op + 1..];
+                let trimmed = after.trim_start();
+                let skip = after.len() - trimmed.len();
+                let rb = trimmed.as_bytes();
+                let mut rend = 0;
+                while rend < rb.len()
+                    && (rb[rend].is_ascii_alphanumeric() || matches!(rb[rend], b'_' | b'(' | b')'))
+                {
+                    rend += 1;
+                }
+                let right = &trimmed[..rend];
+                let balanced = right.matches('(').count() == right.matches(')').count();
+                if !left.is_empty() && !right.is_empty() && balanced {
+                    let kw = &ret[kw_start..kw_end];
+                    let trailing = &trimmed[rend..];
+                    ret = format!(
+                        "{}{} {} BETWEEN {} AND {}{}",
+                        &ret[..kw_start], kw, left, right, right, trailing
+                    );
+                    let _ = skip;
+                }
+            }
+        }
+    }
+
+    // 4. WHEN-anchored `=` rewrite (expression-position payloads).
+    {
+        let bytes = ret.as_bytes();
+        let mut out = String::with_capacity(ret.len() * 2);
+        let mut i = 0;
+        while i < bytes.len() {
+            if ret[i..].len() >= 4
+                && ret[i..i + 4].eq_ignore_ascii_case("when")
+                && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+                && (i + 4 >= bytes.len() || !(bytes[i + 4].is_ascii_alphanumeric() || bytes[i + 4] == b'_'))
+            {
+                let rest = &ret[i + 4..];
+                // WHEN\s+([\w.]+)\s*=\s*([\w.]+) followed by whitespace
+                let t = rest.trim_start();
+                let ab = t.as_bytes();
+                let a_end = ab.iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_' || **c == b'.').count();
+                if a_end > 0 {
+                    let mid = t[a_end..].trim_start();
+                    if mid.starts_with('=') && !mid[1..].starts_with('=') {
+                        let t2 = mid[1..].trim_start();
+                        let b2 = t2.as_bytes();
+                        let b_end = b2.iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_' || **c == b'.').count();
+                        if b_end > 0 && (b_end >= b2.len() || b2[b_end].is_ascii_whitespace()) {
+                            let (a, b_) = (&t[..a_end], &t2[..b_end]);
+                            out.push_str(&ret[i..i + 4]);
+                            out.push(' ');
+                            out.push_str(&format!("{} BETWEEN {} AND {}", a, b_, b_));
+                            i = ret.len() - t2[b_end..].len();
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        ret = out;
+    }
+
+    ret
 }
 
 /// tamper/equaltolike.py: '=' -> ' LIKE '
@@ -157,7 +320,9 @@ pub fn halfversionedmorekeywords(payload: &str) -> String {
         }
         out = res;
     }
-    out
+    // Upstream post-pass: the space before each versioned comment is eaten
+    // (tamper/halfversionedmorekeywords.py: retVal.replace(" /*!0", "/*!0")).
+    out.replace(" /*!0", "/*!0")
 }
 
 /// tamper/space2mysqldash.py: space -> --%0A (MySQL double-dash comment
@@ -405,8 +570,12 @@ pub fn lowercase(payload: &str) -> String {
 pub fn percentage(payload: &str) -> String {
     let mut out = String::with_capacity(payload.len() * 2);
     for c in payload.chars() {
-        out.push('%');
-        out.push(c);
+        if c == ' ' {
+            out.push(c);
+        } else {
+            out.push('%');
+            out.push(c);
+        }
     }
     out
 }
@@ -484,8 +653,61 @@ pub fn htmlencode(payload: &str) -> String {
 }
 
 /// tamper/bluecoat.py: spaces -> TAB, then '=' -> LIKE.
+/// tamper/bluecoat.py: %09 after each SQL keyword, '=' -> ' LIKE '.
+/// Port of upstream's two regex passes: uppercase keyword words not
+/// followed by '(' get %09 appended (then the following space is eaten),
+/// and bare '=' becomes ' LIKE ' (compound operators >=, <=, !=, == are
+/// left alone). Pinned by upstream's doctest in tests/upstream_cases.rs.
 pub fn bluecoat(payload: &str) -> String {
-    payload.replace(' ', "%09").replace('=', " LIKE ")
+    const KEYWORDS: [&str; 32] = [
+        "ALL", "AND", "AS", "BETWEEN", "BY", "CASE", "DELETE", "DISTINCT", "ELSE", "END", "FROM",
+        "GROUP", "HAVING", "IN", "INSERT", "INTO", "JOIN", "LIMIT", "NOT", "NULL", "ON", "OR",
+        "ORDER", "SELECT", "SET", "SLEEP", "TABLE", "THEN", "UNION", "UPDATE", "VALUES", "WHERE",
+    ];
+    let bytes = payload.as_bytes();
+    let mut out = String::with_capacity(payload.len() * 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_uppercase() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_uppercase() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let word = &payload[start..i];
+            let followed_ok = i >= bytes.len() || (!bytes[i].is_ascii_alphanumeric()
+                && bytes[i] != b'_' && bytes[i] != b'(');
+            out.push_str(word);
+            if followed_ok && KEYWORDS.contains(&word) {
+                out.push_str("%09");
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    // '=' -> ' LIKE ', skipping compound operators.
+    let bytes = out.as_bytes();
+    let mut out2 = String::with_capacity(out.len() * 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'='
+            && (i == 0 || !matches!(bytes[i - 1], b'<' | b'>' | b'!' | b'='))
+            && (i + 1 >= bytes.len() || bytes[i + 1] != b'=')
+        {
+            while out2.ends_with(' ') {
+                out2.pop();
+            }
+            out2.push_str(" LIKE ");
+            i += 1;
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
+        } else {
+            out2.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out2.replace("%09 ", "%09")
 }
 
 /// tamper/commalesslimit.py: "LIMIT a,b" -> "LIMIT b OFFSET a" (MySQL).
@@ -613,7 +835,9 @@ pub fn versionedkeywords(payload: &str) -> String {
     for kw in KEYWORDS {
         out = replace_word(&out, kw, &format!("/*!{kw}*/"));
     }
-    out
+    // Upstream post-pass: spaces around the versioned comments are eaten
+    // (tamper/versionedkeywords.py: replace(" /*!", "/*!").replace("*/ ", "*/")).
+    out.replace(" /*!", "/*!").replace("*/ ", "*/")
 }
 
 /// tamper/informationschemacomment.py: INFORMATION_SCHEMA -> INFORMATION_SCHEMA/**/
@@ -922,8 +1146,24 @@ mod tests {
     }
 
     #[test]
-    fn between_swaps_operators() {
-        assert_eq!(between("1=1"), "1 BETWEEN 0 AND 1");
+    fn between_follows_upstream_doctests() {
+        // All five doctest cases from upstream tamper/between.py.
+        assert_eq!(between("1 AND A > B--"), "1 AND A NOT BETWEEN 0 AND B--");
+        assert_eq!(between("1 AND A = B--"), "1 AND A BETWEEN B AND B--");
+        assert_eq!(
+            between("1 AND LAST_INSERT_ROWID()=LAST_INSERT_ROWID()"),
+            "1 AND LAST_INSERT_ROWID() BETWEEN LAST_INSERT_ROWID() AND LAST_INSERT_ROWID()"
+        );
+        assert_eq!(
+            between("1 AND 2314=BENCHMARK(5000000,MD5(0x41))"),
+            "1 AND 2314=BENCHMARK(5000000,MD5(0x41))"
+        );
+        assert_eq!(
+            between("CASE WHEN 1=2 THEN id ELSE 0 END"),
+            "CASE WHEN 1 BETWEEN 2 AND 2 THEN id ELSE 0 END"
+        );
+        // No AND/OR/WHEN anchor and no simple `>` operand: untouched, as upstream.
+        assert_eq!(between("1=1"), "1=1");
     }
 
     #[test]
@@ -945,7 +1185,7 @@ mod tests {
 
     #[test]
     fn halfversioned_wraps_keywords_only() {
-        assert_eq!(halfversionedmorekeywords("1 AND 1=1"), "1 /*!0AND 1=1");
+        assert_eq!(halfversionedmorekeywords("1 AND 1=1"), "1/*!0AND 1=1");
         assert_eq!(halfversionedmorekeywords("CANDY"), "CANDY");
     }
 
@@ -1032,7 +1272,7 @@ mod tests {
     #[test]
     fn batch_30_to_42() {
         assert_eq!(htmlencode("a'b"), "a&#x27;b");
-        assert_eq!(bluecoat("1 AND 1=1"), "1%09AND%091 LIKE 1");
+        assert_eq!(bluecoat("1 AND 1=1"), "1 AND%091 LIKE 1");
         assert_eq!(commalesslimit("x LIMIT 2,3"), "x LIMIT 3 OFFSET 2");
         assert_eq!(commalesslimit("LIMIT 5"), "LIMIT 5");
         assert_eq!(concat2concatws("CONCAT(a,b)"), "CONCAT_WS(MID(CHAR(0),0,0),a,b)");
@@ -1048,7 +1288,7 @@ mod tests {
         assert_eq!(modsecurityzeroversioned("p"), "/*!00000p*/");
         assert_eq!(unmagicquotes("a'b"), "a%bf%27b-- ");
         assert_eq!(overlongutf8more("a'<>"), "a%C0%A7%C0%BC%C0%BE");
-        assert_eq!(versionedkeywords("aNd x"), "/*!AND*/ x");
+        assert_eq!(versionedkeywords("aNd x"), "/*!AND*/x");
         assert_eq!(
             informationschemacomment("FROM information_schema.tables"),
             "FROM INFORMATION_SCHEMA/**/.tables"
