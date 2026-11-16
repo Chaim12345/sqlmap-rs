@@ -30,6 +30,21 @@ pub struct CrawledPage {
 
 /// scheme://authority of a URL - the boundary the crawl never crosses
 /// (sqlmap's crawler is likewise restricted to the target host).
+/// sqlmap checkSameHost (lib/core/common.py): hostnames compare equal after
+/// stripping a leading "www." (case-insensitive); scheme and port do not
+/// participate. A URL without a scheme is treated as http.
+pub fn same_host(a: &str, b: &str) -> bool {
+    fn host(url: &str) -> String {
+        let rest = match url.find("://") {
+            Some(i) => &url[i + 3..],
+            None => url,
+        };
+        let host = rest.split(['/', ':', '?']).next().unwrap_or(rest);
+        host.strip_prefix("www.").unwrap_or(host).to_ascii_lowercase()
+    }
+    !a.is_empty() && !b.is_empty() && host(a) == host(b)
+}
+
 fn origin(url: &str) -> &str {
     match url.find("://") {
         Some(i) => {
@@ -93,9 +108,8 @@ pub fn extract_links(html: &str, page_url: &str) -> Vec<String> {
 /// depth level's pages are fetched concurrently on `threads` workers.
 pub fn crawl(client: &Client, start_url: &str, max_depth: u8, threads: usize) -> Vec<CrawledPage> {
     let start = start_url.split('#').next().unwrap_or(start_url).to_string();
-    let home = origin(&start).to_string();
     let mut seen: HashSet<String> = HashSet::from([start.clone()]);
-    let mut frontier: Vec<(String, u8)> = vec![(start, 0)];
+    let mut frontier: Vec<(String, u8)> = vec![(start.clone(), 0)];
     let mut pages = Vec::new();
     while !frontier.is_empty() {
         let specs: Vec<RequestSpec> = frontier
@@ -114,7 +128,7 @@ pub fn crawl(client: &Client, start_url: &str, max_depth: u8, threads: usize) ->
             let Ok(resp) = resp else { continue };
             if depth < max_depth {
                 for link in extract_links(&resp.body, &url) {
-                    if is_static_resource(&link) || origin(&link) != home {
+                    if is_static_resource(&link) || !same_host(&link, &start) {
                         continue;
                     }
                     if seen.insert(link.clone()) {
