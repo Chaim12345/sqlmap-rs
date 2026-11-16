@@ -6,7 +6,8 @@
 
 use crate::client::{Client, RequestSpec};
 use crate::forms::resolve_url;
-use std::collections::{HashSet, VecDeque};
+use crate::pool;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 static HREF_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -88,34 +89,42 @@ pub fn extract_links(html: &str, page_url: &str) -> Vec<String> {
 
 /// Breadth-first crawl from `start_url`, staying on its scheme://authority,
 /// following links up to `max_depth` hops. Every fetched page is returned in
-/// discovery order; each URL is visited once, so link cycles terminate.
-pub fn crawl(client: &Client, start_url: &str, max_depth: u8) -> Vec<CrawledPage> {
+/// discovery order; each URL is visited once, so link cycles terminate. Each
+/// depth level's pages are fetched concurrently on `threads` workers.
+pub fn crawl(client: &Client, start_url: &str, max_depth: u8, threads: usize) -> Vec<CrawledPage> {
     let start = start_url.split('#').next().unwrap_or(start_url).to_string();
     let home = origin(&start).to_string();
     let mut seen: HashSet<String> = HashSet::from([start.clone()]);
-    let mut queue: VecDeque<(String, u8)> = VecDeque::from([(start, 0)]);
+    let mut frontier: Vec<(String, u8)> = vec![(start, 0)];
     let mut pages = Vec::new();
-    while let Some((url, depth)) = queue.pop_front() {
-        let resp = client.request(&RequestSpec {
-            url: url.clone(),
-            method: "GET".into(),
-            body: None,
-            headers: Vec::new(),
-            cookie: None,
-        });
-        let Ok(resp) = resp else { continue };
-        pages.push(CrawledPage { url: url.clone(), depth });
-        if depth >= max_depth {
-            continue;
-        }
-        for link in extract_links(&resp.body, &url) {
-            if is_static_resource(&link) || origin(&link) != home {
-                continue;
+    while !frontier.is_empty() {
+        let specs: Vec<RequestSpec> = frontier
+            .iter()
+            .map(|(url, _)| RequestSpec {
+                url: url.clone(),
+                method: "GET".into(),
+                body: None,
+                headers: Vec::new(),
+                cookie: None,
+            })
+            .collect();
+        let results = pool::run_requests(client, specs, threads);
+        let mut next = Vec::new();
+        for ((url, depth), resp) in frontier.into_iter().zip(results) {
+            let Ok(resp) = resp else { continue };
+            if depth < max_depth {
+                for link in extract_links(&resp.body, &url) {
+                    if is_static_resource(&link) || origin(&link) != home {
+                        continue;
+                    }
+                    if seen.insert(link.clone()) {
+                        next.push((link, depth + 1));
+                    }
+                }
             }
-            if seen.insert(link.clone()) {
-                queue.push_back((link, depth + 1));
-            }
+            pages.push(CrawledPage { url, depth });
         }
+        frontier = next;
     }
     pages
 }

@@ -94,7 +94,7 @@ fn crawl_scan(client: &Client, conf: &Config) -> ScanResult {
         kb: KnowledgeBase::default(),
         log: Vec::new(),
     };
-    let pages = sqlmap_http::crawl::crawl(client, &conf.target_url, conf.crawl_depth);
+    let pages = sqlmap_http::crawl::crawl(client, &conf.target_url, conf.crawl_depth, conf.threads);
     out.log.push(format!(
         "crawler collected {} page(s) up to depth {}",
         pages.len(),

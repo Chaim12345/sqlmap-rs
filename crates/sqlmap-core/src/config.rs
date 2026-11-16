@@ -75,6 +75,8 @@ pub struct Config {
     /// Crawl same-host links from the target up to this depth and test every
     /// page found; 0 disables crawling (sqlmap --crawl).
     pub crawl_depth: u8,
+    /// Worker threads for concurrent HTTP requests (sqlmap --threads).
+    pub threads: usize,
 }
 
 impl Config {
@@ -116,6 +118,7 @@ impl Default for Config {
             target_table: None,
             forms: false,
             crawl_depth: 0,
+            threads: 4,
         }
     }
 }

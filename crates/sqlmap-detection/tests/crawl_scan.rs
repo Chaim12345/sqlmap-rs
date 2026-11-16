@@ -59,7 +59,7 @@ fn crawl_stays_same_host_and_respects_depth() {
     let client = Client::new(&conf);
 
     // Depth 1: start page plus the pages it links to on this host.
-    let pages = sqlmap_http::crawl::crawl(&client, &conf.target_url, 1);
+    let pages = sqlmap_http::crawl::crawl(&client, &conf.target_url, 1, conf.threads);
     let urls: Vec<&str> = pages.iter().map(|p| p.url.as_str()).collect();
     for want in ["/", "/search", "/get?id=1", "/item?name=widget", "/detail"] {
         let want = app.url(want);
@@ -80,7 +80,7 @@ fn crawl_stays_same_host_and_respects_depth() {
     assert_eq!(pages[0].depth, 0);
 
     // Depth 2 reaches /deep, and the / -> /detail -> / cycle terminates.
-    let pages = sqlmap_http::crawl::crawl(&client, &conf.target_url, 2);
+    let pages = sqlmap_http::crawl::crawl(&client, &conf.target_url, 2, conf.threads);
     let urls: Vec<&str> = pages.iter().map(|p| p.url.as_str()).collect();
     assert!(urls.contains(&deep.as_str()), "depth 2 missed /deep: {urls:?}");
     let deep_count = urls.iter().filter(|u| **u == deep.as_str()).count();

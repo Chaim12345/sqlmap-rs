@@ -5,6 +5,7 @@
 pub mod client;
 pub mod crawl;
 pub mod forms;
+pub mod pool;
 pub mod comparison;
 pub mod params;
 

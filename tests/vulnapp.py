@@ -11,7 +11,7 @@ Localhost use only. Usage: python3 tests/vulnapp.py [port]
 import re
 import sys
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qsl, unquote_plus
 
 NORMAL = "<html><body><h1>Item 1</h1><p>Widget - in stock: 12</p></body></html>"
@@ -421,4 +421,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8734
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    # Threaded so worker-pool concurrency tests measure real parallelism.
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

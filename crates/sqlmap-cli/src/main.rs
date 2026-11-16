@@ -106,6 +106,10 @@ struct Args {
     /// Crawl the target same-host up to this depth and test every page found (sqlmap --crawl)
     #[arg(long, default_value_t = 0)]
     crawl: u8,
+
+    /// Worker threads for concurrent HTTP requests (sqlmap --threads)
+    #[arg(long, default_value_t = 4)]
+    threads: usize,
 }
 
 fn main() {
@@ -134,6 +138,7 @@ fn main() {
         target_table: args.table,
         forms: args.forms,
         crawl_depth: args.crawl,
+        threads: args.threads.max(1),
         ..Config::default()
     };
 
