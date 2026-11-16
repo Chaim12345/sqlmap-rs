@@ -36,6 +36,157 @@ def xpath_error(marker: str) -> str:
     )
 
 
+
+# --- Fake in-memory "database" the emulated MySQL server holds --------------
+# The exfiltration half of the port runs information_schema / dump subqueries
+# through blind bisection; the emulator evaluates exactly those query shapes
+# against this state, so end-to-end tests assert real recovered values.
+SCHEMATA = ["information_schema", "mysql", "shop"]
+TABLES = {
+    "information_schema": ["columns", "schemata", "tables"],
+    "mysql": ["db", "user"],
+    "shop": ["products", "users"],
+}
+COLUMNS = {
+    ("information_schema", "columns"): ["table_schema", "table_name", "column_name"],
+    ("information_schema", "schemata"): ["schema_name"],
+    ("information_schema", "tables"): ["table_schema", "table_name"],
+    ("mysql", "db"): ["host", "db", "user"],
+    ("mysql", "user"): ["host", "user", "password"],
+    ("shop", "products"): ["id", "name", "price"],
+    ("shop", "users"): ["id", "username", "password"],
+}
+ROWS = {
+    ("shop", "products"): [("1", "widget", "9.99"), ("2", "gadget", "19.99")],
+    ("shop", "users"): [
+        ("1", "admin", "s3cr3t-pass"),
+        ("2", "alice", "hunter2"),
+        ("3", "bob", "qwerty"),
+    ],
+    ("mysql", "user"): [("localhost", "root", "mysql-native-hash")],
+    ("mysql", "db"): [("localhost", "shop", "app")],
+}
+
+
+def name_token(tok):
+    """Decode a SQL identifier literal: 0x hex string or 'quoted'."""
+    tok = tok.strip()
+    m = re.fullmatch(r"0x([0-9a-fA-F]+)", tok)
+    if m:
+        return bytes.fromhex(m.group(1)).decode("utf-8", "replace")
+    m = re.fullmatch(r"'([^']*)'", tok)
+    if m:
+        return m.group(1)
+    return tok
+
+
+def eval_scalar(q):
+    """Evaluate the fixed set of subqueries the port issues for enumeration
+    against the fake in-memory DB. Returns str/int, or None if unrecognized."""
+    q = re.sub(r"\s+", " ", q.strip())
+    if re.fullmatch(r"SELECT COUNT\(schema_name\) FROM information_schema\.schemata", q, re.I):
+        return len(SCHEMATA)
+    m = re.fullmatch(r"SELECT schema_name FROM information_schema\.schemata LIMIT (\d+),1", q, re.I)
+    if m:
+        i = int(m.group(1))
+        return SCHEMATA[i] if i < len(SCHEMATA) else ""
+    m = re.fullmatch(r"SELECT COUNT\(table_name\) FROM information_schema\.tables WHERE table_schema=(\S+)", q, re.I)
+    if m:
+        return len(TABLES.get(name_token(m.group(1)), []))
+    m = re.fullmatch(r"SELECT table_name FROM information_schema\.tables WHERE table_schema=(\S+) LIMIT (\d+),1", q, re.I)
+    if m:
+        lst = TABLES.get(name_token(m.group(1)), [])
+        i = int(m.group(2))
+        return lst[i] if i < len(lst) else ""
+    m = re.fullmatch(r"SELECT COUNT\(column_name\) FROM information_schema\.columns WHERE table_schema=(\S+) AND table_name=(\S+)", q, re.I)
+    if m:
+        return len(COLUMNS.get((name_token(m.group(1)), name_token(m.group(2))), []))
+    m = re.fullmatch(r"SELECT column_name FROM information_schema\.columns WHERE table_schema=(\S+) AND table_name=(\S+) LIMIT (\d+),1", q, re.I)
+    if m:
+        lst = COLUMNS.get((name_token(m.group(1)), name_token(m.group(2))), [])
+        i = int(m.group(3))
+        return lst[i] if i < len(lst) else ""
+    m = re.fullmatch(r"SELECT COUNT\(\*\) FROM (\w+)\.(\w+)", q, re.I)
+    if m:
+        return len(ROWS.get((m.group(1).lower(), m.group(2).lower()), []))
+    m = re.fullmatch(r"SELECT CONCAT_WS\(0x3a,([\w,]+)\) FROM (\w+)\.(\w+) LIMIT (\d+),1", q, re.I)
+    if m:
+        rows = ROWS.get((m.group(2).lower(), m.group(3).lower()), [])
+        i = int(m.group(4))
+        return ":".join(rows[i]) if i < len(rows) else ""
+    return None
+
+
+def balanced(s, i):
+    """s[i] must be '('; return (content, index after matching ')')."""
+    if i >= len(s) or s[i] != "(":
+        return None, -1
+    depth = 0
+    for j in range(i, len(s)):
+        if s[j] == "(":
+            depth += 1
+        elif s[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return s[i + 1 : j], j + 1
+    return None, -1
+
+
+def exfil_conditions(full):
+    """Collect (value, op, num) triples from blind-exfil condition shapes:
+    ASCII(SUBSTRING((q),P,1))<op>N, LENGTH((q))<op>N, (SELECT COUNT...)<op>N."""
+    out = []
+    for m in re.finditer(r"ASCII\s*\(\s*SUBSTRING\s*\(\s*", full, re.I):
+        if m.end() >= len(full) or full[m.end()] != "(":
+            continue
+        scalar, end = balanced(full, m.end())
+        m2 = re.match(r"\s*,\s*(\d+)\s*,\s*1\s*\)\s*\)\s*(>=|<=|=|>|<)\s*(\d+)", full[end:])
+        if scalar is None or not m2:
+            continue
+        val = eval_scalar(scalar)
+        if val is None:
+            continue
+        pos = int(m2.group(1))
+        s = str(val)
+        ch = s[pos - 1] if 0 < pos <= len(s) else ""
+        out.append((ord(ch) if ch else 0, m2.group(2), int(m2.group(3))))
+    for m in re.finditer(r"LENGTH\s*\(\s*", full, re.I):
+        if m.end() >= len(full) or full[m.end()] != "(":
+            continue
+        scalar, end = balanced(full, m.end())
+        m2 = re.match(r"\s*\)\s*(>=|<=|=|>|<)\s*(\d+)", full[end:])
+        if scalar is None or not m2:
+            continue
+        val = eval_scalar(scalar)
+        if val is None:
+            continue
+        out.append((len(str(val)), m2.group(1), int(m2.group(2))))
+    for m in re.finditer(r"AND\s*\(", full, re.I):
+        inner, end = balanced(full, m.end() - 1)
+        if inner is None or not re.match(r"\s*SELECT\s+COUNT", inner, re.I):
+            continue
+        m2 = re.match(r"\s*(>=|<=|=|>|<)\s*(\d+)", full[end:])
+        if not m2:
+            continue
+        val = eval_scalar(inner)
+        if val is None:
+            continue
+        out.append((int(val), m2.group(1), int(m2.group(2))))
+    return out
+
+
+def compare(value, op, num):
+    if op == ">":
+        return value > num
+    if op == "<":
+        return value < num
+    if op == ">=":
+        return value >= num
+    if op == "<=":
+        return value <= num
+    return value == num
+
+
 def eval_value(value: str, quoted: bool = False) -> str:
     """Decide the page for an injected parameter value.
 
@@ -79,8 +230,12 @@ def eval_value(value: str, quoted: bool = False) -> str:
     # Boolean: every AND <a>=<b> (numeric or quoted) must hold.
     conds = re.findall(r"AND\s+(\d+)\s*=\s*(\d+)", full, re.I)
     conds += re.findall(r"AND\s*'([^']*)'\s*=\s*'([^']*)", full, re.I)
-    if conds:
-        return NORMAL if all(a == b for a, b in conds) else EMPTY
+    ok = all(a == b for a, b in conds) if conds else True
+    xconds = exfil_conditions(full)
+    if xconds:
+        ok = ok and all(compare(v, op, n) for v, op, n in xconds)
+    if conds or xconds:
+        return NORMAL if ok else EMPTY
     return NORMAL
 
 

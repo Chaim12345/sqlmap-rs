@@ -10,17 +10,32 @@ detection logic goes to the sqlmap authors and contributors. See LICENSE.
 
 ## What works today
 
-Detects SQL injection on a target URL using the three core blind/error techniques,
-with automatic MySQL/PostgreSQL/MSSQL/Oracle/SQLite error-based fingerprinting:
+Detects SQL injection on a target URL using the three core blind/error techniques
+plus UNION column-count probing, with automatic MySQL/PostgreSQL/MSSQL/Oracle/SQLite
+error-based fingerprinting. Once a boolean-based injection is found, it enumerates
+and dumps data through blind inference (sqlmap's bisection oracle):
+
+```
+# find the injection
+cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --technique BEUT
+# enumerate
+cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --dbs
+cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --tables -D shop
+# dump
+cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --dump -D shop -T users
+```
 
 ```
 cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --technique BET
 ```
 
 Verified end-to-end by integration tests that spawn a local deliberately-vulnerable
-app (`tests/vulnapp.py`, a MySQL emulator) and confirm real detection on numeric
-(GET), string (GET), POST-body, Cookie and User-Agent (level >= 3) parameters,
-including through a tamper chain. `--json` emits findings as JSON. `cargo test --workspace` runs everything; CI runs the same on every push.
+app (`tests/vulnapp.py`, a MySQL emulator holding a fake in-memory database) and
+confirm: real detection on numeric (GET), string (GET), POST-body, Cookie and
+User-Agent (level >= 3) parameters, including through a tamper chain; and
+byte-for-byte recovery of databases, tables, columns and full table dumps via
+blind inference. `--json` emits findings as JSON. `cargo test --workspace` runs
+everything; CI runs the same on every push.
 
 ### Module map
 
@@ -31,15 +46,17 @@ including through a tamper chain. `--json` emits findings as JSON. `cargo test -
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind}.xml` | ported (level 1-2 head entries) |
 | `sqlmap-tamper` | `tamper/*.py` | partial: 10 scripts |
-| `sqlmap-detection` | `lib/controller/checks.py` | ported: boolean, error-based, time-based; union partial |
+| `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py` | ported: boolean, error-based, time-based; union partial; blind exfiltration (`--dbs/--tables/--columns/--dump`) |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
 ### Deliberately not ported
 
-- Data exfiltration (`--dump`, UNION query data retrieval, DNS exfiltration)
-- Takeover features (`--os-shell`, `--os-pwn`, file read/write)
+- UNION SELECT data retrieval (column-count probing via ORDER BY IS ported, and
+  enumeration works through blind inference; the faster UNION exfil channel is not)
+- DNS exfiltration, takeover features (`--os-shell`, `--os-pwn`, file read/write)
 - Stacked-queries and inline-query techniques
-- UNION data exfiltration (column-count probing via ORDER BY IS ported; the finding reports the column count, but no UNION SELECT data retrieval)
+- Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
+  the information_schema queries used by --dbs/--dump are MySQL-flavored)
 - The remaining ~60 tamper scripts, WAF identification, session persistence,
   multi-target modes, crawling, forms auto-discovery, proxy support, threading
 
@@ -56,6 +73,9 @@ skips unknown techniques/tampers with a log line rather than pretending.
   out network jitter.
 - Error-based detection requires the payload marker to be echoed inside a
   DBMS error - same contract as upstream's error payloads.
+- Blind inference uses sqlmap's bisection semantics (`expr > mid` probes with a
+  final equality confirmation per character); string literals in enumeration
+  queries are hex-encoded (0x...) like upstream, so string boundaries stay intact.
 
 ## Development
 

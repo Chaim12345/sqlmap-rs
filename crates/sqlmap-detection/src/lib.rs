@@ -6,8 +6,12 @@
 //!   -> error-based (payload marker echoed inside a DBMS error)
 //!   -> time-based blind (response delayed by ~SLEEPTIME, confirmed twice)
 //!
-//! UNION-based and stacked-queries checks are not ported yet.
+//! UNION-based is partial (column-count probing); stacked-queries is not ported.
+//!
+//! After detection, `exfil` runs --dbs/--tables/--columns/--dump through
+//! blind inference on a confirmed boolean injection.
 
 pub mod engine;
+pub mod exfil;
 
 pub use engine::{Engine, ScanResult};

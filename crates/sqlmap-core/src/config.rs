@@ -58,6 +58,25 @@ pub struct Config {
     pub user_agent: Option<String>,
     /// Comparison ratio threshold for boolean detection (sqlmap --string/--not-string are not ported).
     pub page_ratio_threshold: f64,
+    /// Enumerate databases (sqlmap --dbs). Blind inference only.
+    pub enum_dbs: bool,
+    /// Enumerate tables (sqlmap --tables; -D narrows to one database).
+    pub enum_tables: bool,
+    /// Enumerate columns (sqlmap --columns; requires -D and -T).
+    pub enum_columns: bool,
+    /// Dump table rows (sqlmap --dump; requires -D and -T).
+    pub dump: bool,
+    /// Target database (sqlmap -D).
+    pub target_db: Option<String>,
+    /// Target table (sqlmap -T).
+    pub target_table: Option<String>,
+}
+
+impl Config {
+    /// True when any enumeration/exfiltration flag is set.
+    pub fn wants_enumeration(&self) -> bool {
+        self.enum_dbs || self.enum_tables || self.enum_columns || self.dump
+    }
 }
 
 impl Default for Config {
@@ -84,6 +103,12 @@ impl Default for Config {
             follow_redirects: false,
             user_agent: None,
             page_ratio_threshold: 0.90,
+            enum_dbs: false,
+            enum_tables: false,
+            enum_columns: false,
+            dump: false,
+            target_db: None,
+            target_table: None,
         }
     }
 }

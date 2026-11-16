@@ -74,6 +74,30 @@ struct Args {
     /// Print findings as JSON instead of text
     #[arg(long)]
     json: bool,
+
+    /// Enumerate databases (sqlmap --dbs, blind inference)
+    #[arg(long)]
+    dbs: bool,
+
+    /// Enumerate tables (sqlmap --tables; use -D to narrow)
+    #[arg(long)]
+    tables: bool,
+
+    /// Enumerate columns (sqlmap --columns; requires -D and -T)
+    #[arg(long)]
+    columns: bool,
+
+    /// Dump table rows (sqlmap --dump; requires -D and -T)
+    #[arg(long)]
+    dump: bool,
+
+    /// Target database (sqlmap -D)
+    #[arg(short = 'D', long)]
+    db: Option<String>,
+
+    /// Target table (sqlmap -T)
+    #[arg(short = 'T', long)]
+    table: Option<String>,
 }
 
 fn main() {
@@ -94,6 +118,12 @@ fn main() {
         timeout: args.timeout,
         follow_redirects: args.follow_redirects,
         user_agent: args.user_agent,
+        enum_dbs: args.dbs,
+        enum_tables: args.tables,
+        enum_columns: args.columns,
+        dump: args.dump,
+        target_db: args.db,
+        target_table: args.table,
         ..Config::default()
     };
 
@@ -112,6 +142,7 @@ fn main() {
             "target": conf.target_url,
             "fingerprinted_dbms": kb.fingerprinted_dbms,
             "injections": kb.injections,
+            "enumeration": kb.enumeration,
             "log": result.log,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
@@ -133,5 +164,24 @@ fn main() {
             "    {} ({:?}) - {:?} - payload: {}",
             inj.parameter, inj.place, inj.technique, inj.payload
         );
+    }
+    let en = &kb.enumeration;
+    if !en.is_empty() {
+        if !en.databases.is_empty() {
+            println!("[+] databases: {}", en.databases.join(", "));
+        }
+        for (db, tables) in &en.tables {
+            println!("[+] {db}: {}", tables.join(", "));
+        }
+        for c in &en.columns {
+            println!("[+] {}.{}: {}", c.db, c.table, c.columns.join(", "));
+        }
+        for d in &en.dumps {
+            println!("[+] dump {}.{} ({} row(s)):", d.db, d.table, d.rows.len());
+            println!("    {}", d.columns.join(" | "));
+            for row in &d.rows {
+                println!("    {}", row.join(" | "));
+            }
+        }
     }
 }

@@ -11,6 +11,39 @@ pub struct KnowledgeBase {
     pub fingerprinted_dbms: Option<String>,
     /// Pages already compared, keyed loosely (sqlmap uses kb.pageComparisons).
     pub tested_params: Vec<String>,
+    /// Results of --dbs/--tables/--columns/--dump enumeration, if requested.
+    pub enumeration: Enumeration,
+}
+
+/// Enumeration/exfiltration results (port of sqlmap `kb.data` outputs).
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Enumeration {
+    pub databases: Vec<String>,
+    /// Database name -> table names.
+    pub tables: std::collections::BTreeMap<String, Vec<String>>,
+    pub columns: Vec<ColumnEntry>,
+    pub dumps: Vec<TableDump>,
+}
+
+impl Enumeration {
+    pub fn is_empty(&self) -> bool {
+        self.databases.is_empty() && self.tables.is_empty() && self.columns.is_empty() && self.dumps.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnEntry {
+    pub db: String,
+    pub table: String,
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableDump {
+    pub db: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
 }
 
 impl KnowledgeBase {
