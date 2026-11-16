@@ -639,6 +639,22 @@ pub fn charunicodeencode(payload: &str) -> String {
 /// them as payload no-ops.
 pub const HEADER_TAMPERS: [&str; 2] = ["xforwardedfor", "varnish"];
 
+/// Payload-embedding header tampers (upstream referer.py): the assembled
+/// payload itself is placed into a request header, per request.
+pub const PAYLOAD_HEADER_TAMPERS: [&str; 1] = ["referer"];
+
+/// Headers derived from the assembled payload (upstream referer.py sets the
+/// Referer header to the payload verbatim). Applied per injected request.
+pub fn payload_header_mutations(names: &[String], payload: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for name in names {
+        if name == "referer" {
+            out.push(("Referer".to_string(), payload.to_string()));
+        }
+    }
+    out
+}
+
 /// Header mutations from the active tamper set, in the order given.
 /// xforwardedfor: a random IPv4 address (upstream picks from public ranges);
 /// varnish: X-Forwarded-For fixed at 127.0.0.1 to slip behind Varnish ACLs.
@@ -846,7 +862,7 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
             "hex2char" => hex2char(&out),
             "hexentities" => hexentities(&out),
             // Header tampers mutate headers, not the payload.
-            n if HEADER_TAMPERS.contains(&n) => out,
+            n if HEADER_TAMPERS.contains(&n) || PAYLOAD_HEADER_TAMPERS.contains(&n) => out,
             other => return Err(format!("unknown tamper script: {other} (available: {AVAILABLE:?})")),
         };
     }
@@ -1066,5 +1082,16 @@ mod tests {
         assert_eq!(hex2char("a0x41"), "a0x41");
         assert_eq!(hex2char("0x4"), "0x4");
         assert_eq!(hexentities("a'b"), "&#x61;&#x27;&#x62;");
+    }
+
+    #[test]
+    fn referer_embeds_payload_in_header() {
+        let names = vec!["referer".to_string()];
+        assert_eq!(
+            payload_header_mutations(&names, "1 AND 1=1"),
+            vec![("Referer".to_string(), "1 AND 1=1".to_string())]
+        );
+        // And it leaves the payload itself untouched.
+        assert_eq!(apply_all(&names, "1 AND 1=1", 7).unwrap(), "1 AND 1=1");
     }
 }

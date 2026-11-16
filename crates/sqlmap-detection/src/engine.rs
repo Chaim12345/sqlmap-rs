@@ -500,7 +500,7 @@ pub(crate) fn build_request(conf: &Config, param: &Param, new_value: &str) -> Re
                     url: format!("{base}?{query}"),
                     method: "GET".into(),
                     body: conf.data.clone(),
-                    headers: parse_headers(&conf.headers),
+                    headers: tampered_headers(conf, new_value),
                     cookie: conf.cookie.clone(),
                 }
             }
@@ -515,7 +515,7 @@ pub(crate) fn build_request(conf: &Config, param: &Param, new_value: &str) -> Re
                     url: conf.target_url.clone(),
                     method: "POST".into(),
                     body: Some(body),
-                    headers: parse_headers(&conf.headers),
+                    headers: tampered_headers(conf, new_value),
                     cookie: conf.cookie.clone(),
                 }
             }
@@ -530,12 +530,12 @@ pub(crate) fn build_request(conf: &Config, param: &Param, new_value: &str) -> Re
                     url: conf.target_url.clone(),
                     method: if conf.data.is_some() { "POST".into() } else { "GET".into() },
                     body: conf.data.clone(),
-                    headers: parse_headers(&conf.headers),
+                    headers: tampered_headers(conf, new_value),
                     cookie: Some(cookie),
                 }
             }
             Place::UserAgent | Place::Referer | Place::CustomHeader => {
-                let mut headers = parse_headers(&conf.headers);
+                let mut headers = tampered_headers(conf, new_value);
                 headers.retain(|(k, _)| !k.eq_ignore_ascii_case(&param.name));
                 headers.push((param.name.clone(), new_value.to_string()));
                 RequestSpec {
@@ -597,6 +597,14 @@ pub(crate) fn assemble(conf: &Config, log: &mut Vec<String>, param: &Param, boun
         }
         joined
     }
+
+/// Request headers: explicit --headers plus payload-embedding tamper
+/// headers (upstream referer.py sets Referer to the payload itself).
+fn tampered_headers(conf: &Config, new_value: &str) -> Vec<(String, String)> {
+    let mut headers = parse_headers(&conf.headers);
+    headers.extend(sqlmap_tamper::payload_header_mutations(&conf.tampers, new_value));
+    headers
+}
 
 fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()

@@ -53,7 +53,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         finally:
             conn.close()
-        self._log(f"{self.command} {self.path}")
+        referer = (self.headers.get("Referer") or "").replace("\r", " ").replace("\n", " ")
+        self._log(f"{self.command} {self.path} referer={referer}")
         self.send_response(resp.status)
         for k, v in resp.getheaders():
             if k.lower() in HOP_BY_HOP or k.lower() == "content-length":
