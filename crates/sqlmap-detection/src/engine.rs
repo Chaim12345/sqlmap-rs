@@ -4,7 +4,7 @@ use sqlmap_core::config::{Config, Place, Technique};
 use sqlmap_core::injection::{Boundary, Injection};
 use sqlmap_core::kb::KnowledgeBase;
 use sqlmap_http::client::{Client, RequestSpec, Response};
-use sqlmap_http::comparison::{filtered_page, ratio};
+use sqlmap_http::comparison::{filtered_page, ratio, strip_reflection};
 use sqlmap_http::params::{self, Param};
 use sqlmap_payloads as pl;
 use std::time::Duration;
@@ -280,7 +280,25 @@ impl<'a> Engine<'a> {
                     Ok(r) => r,
                     Err(_) => continue,
                 };
-                let true_ratio = ratio(orig_page, &filtered_page(&true_resp.body));
+                // Reflection guard (port of lib/utils/nonsql.py stripReflection):
+                // each page is compared with its own injected value removed, so
+                // a pure echo endpoint collapses to identical pages instead of
+                // looking like a boolean oracle.
+                let true_page = filtered_page(&strip_reflection(&true_resp.body, &true_val));
+                // The baseline echoes the original parameter value, not a
+                // payload; strip that from the baseline for the same reason.
+                // A purely word-character value ("1", "widget") is NOT
+                // stripped: replacing every occurrence of a common short
+                // token would explode the page (this mirrors the blind spot
+                // upstream's heuristic accepts for alphanumeric payloads).
+                let word_only = !param.value.is_empty()
+                    && param.value.chars().all(|c| c.is_alphanumeric() || c == '_');
+                let orig_cmp = if word_only {
+                    orig_page.to_string()
+                } else {
+                    strip_reflection(orig_page, &param.value)
+                };
+                let true_ratio = ratio(&orig_cmp, &true_page);
                 if true_ratio < threshold {
                     continue;
                 }
@@ -289,7 +307,8 @@ impl<'a> Engine<'a> {
                     Ok(r) => r,
                     Err(_) => continue,
                 };
-                let false_ratio = ratio(&filtered_page(&true_resp.body), &filtered_page(&false_resp.body));
+                let false_page = filtered_page(&strip_reflection(&false_resp.body, &false_val));
+                let false_ratio = ratio(&true_page, &false_page);
                 if false_ratio < threshold {
                     self.say(format!(
                         "  INJECTABLE (boolean): '{}' with {} [{}], true_ratio={true_ratio:.3} false_ratio={false_ratio:.3}",

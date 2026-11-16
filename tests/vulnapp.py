@@ -467,6 +467,12 @@ class Handler(BaseHTTPRequestHandler):
             if xff:
                 page += " xff:" + xff
             page += "</body></html>"
+        elif u.path == "/echo":
+            # Pure reflection endpoint: the q parameter is echoed verbatim,
+            # never interpreted as SQL. A scanner that mistakes an echo for
+            # a boolean oracle reports a false positive here.
+            q = params.get("q", "")
+            page = "<html><body>you searched for: " + q + "</body></html>"
         elif u.path == "/search":
             page = (
                 "<html><body>"
