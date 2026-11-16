@@ -37,6 +37,8 @@ cargo run -p sqlmap-cli -- -u "http://localhost/index.php" --crawl 2
 cargo run -p sqlmap-cli -- -u "http://localhost/index.php" --crawl 2 --threads 8
 # identify a WAF/IPS in front of the target before scanning
 cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --identify-waf
+# scan a saved raw HTTP request (Burp-style), flags override the file
+cargo run -p sqlmap-cli -- -r login-request.txt
 ```
 
 Session cookies persist across requests: every response's Set-Cookie updates

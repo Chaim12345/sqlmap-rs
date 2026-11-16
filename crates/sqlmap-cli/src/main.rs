@@ -12,8 +12,12 @@ use sqlmap_core::parse_techniques;
 #[command(name = "sqlmap-rs", version, about, long_about = None)]
 struct Args {
     /// Target URL (sqlmap -u)
-    #[arg(short = 'u', long)]
-    url: String,
+    #[arg(short = 'u', long, required_unless_present = "request_file")]
+    url: Option<String>,
+
+    /// Load the target from a raw HTTP request file (sqlmap -r)
+    #[arg(short = 'r', long = "request-file")]
+    request_file: Option<String>,
 
     /// Data string for POST requests (sqlmap --data)
     #[arg(long)]
@@ -130,11 +134,42 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+    // sqlmap -r: a saved raw request supplies URL/body/cookie/headers;
+    // explicit command-line flags win over the file's values.
+    let parsed = args.request_file.as_ref().map(|file| {
+        let text = std::fs::read_to_string(file)
+            .unwrap_or_else(|e| {
+                eprintln!("[-] cannot read request file {file}: {e}");
+                std::process::exit(2);
+            });
+        sqlmap_core::requestfile::parse_request_file(&text, "http")
+            .unwrap_or_else(|e| {
+                eprintln!("[-] cannot parse request file {file}: {e}");
+                std::process::exit(2);
+            })
+    });
     let conf = Config {
-        target_url: args.url.clone(),
-        data: args.data,
-        cookie: args.cookie,
-        headers: args.headers,
+        target_url: args
+            .url
+            .clone()
+            .or_else(|| parsed.as_ref().map(|p| p.url.clone()))
+            .unwrap_or_default(),
+        data: args
+            .data
+            .clone()
+            .or_else(|| parsed.as_ref().and_then(|p| p.body.clone())),
+        cookie: args
+            .cookie
+            .clone()
+            .or_else(|| parsed.as_ref().and_then(|p| p.cookie.clone())),
+        headers: {
+            let mut h = parsed
+                .as_ref()
+                .map(|p| p.headers.clone())
+                .unwrap_or_default();
+            h.extend(args.headers.clone());
+            h
+        },
         test_param: args.param,
         skip_param: args.skip,
         techniques: parse_techniques(&args.technique),

@@ -5,6 +5,7 @@
 pub mod config;
 pub mod injection;
 pub mod kb;
+pub mod requestfile;
 
 pub use config::{Config, Place, Technique};
 pub use injection::{Boundary, Injection};
