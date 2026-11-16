@@ -118,6 +118,14 @@ struct Args {
     /// Do not update session cookies from Set-Cookie responses (sqlmap --ignore-set-cookie)
     #[arg(long)]
     ignore_set_cookie: bool,
+
+    /// Session file for resumable scans (sqlmap -s/--session)
+    #[arg(short = 's', long)]
+    session: Option<String>,
+
+    /// Ignore and overwrite the session file (sqlmap --flush-session)
+    #[arg(long)]
+    flush_session: bool,
 }
 
 fn main() {
@@ -149,6 +157,8 @@ fn main() {
         threads: args.threads.max(1),
         identify_waf: args.identify_waf,
         ignore_set_cookies: args.ignore_set_cookie,
+        session_file: args.session,
+        flush_session: args.flush_session,
         ..Config::default()
     };
 

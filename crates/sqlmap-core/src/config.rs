@@ -83,6 +83,10 @@ pub struct Config {
     /// Do not update the session cookie jar from Set-Cookie responses
     /// (sqlmap --ignore-set-cookie).
     pub ignore_set_cookies: bool,
+    /// Session file for resumable scans (sqlmap -s/--session).
+    pub session_file: Option<String>,
+    /// Ignore and overwrite the session file (sqlmap --flush-session).
+    pub flush_session: bool,
 }
 
 impl Config {
@@ -127,6 +131,8 @@ impl Default for Config {
             threads: 4,
             identify_waf: false,
             ignore_set_cookies: false,
+            session_file: None,
+            flush_session: false,
         }
     }
 }

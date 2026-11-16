@@ -12,3 +12,5 @@ sqlmap-dbms = { path = "../sqlmap-dbms" }
 sqlmap-payloads = { path = "../sqlmap-payloads" }
 sqlmap-tamper = { path = "../sqlmap-tamper" }
 regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

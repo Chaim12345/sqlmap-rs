@@ -649,6 +649,8 @@ name = "sqlmap-detection"
 version = "0.1.0"
 dependencies = [
  "regex",
+ "serde",
+ "serde_json",
  "sqlmap-core",
  "sqlmap-dbms",
  "sqlmap-http",

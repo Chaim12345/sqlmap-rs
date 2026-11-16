@@ -46,9 +46,37 @@ fn merge(dst: &mut ScanResult, src: ScanResult) {
     dst.log.extend(src.log);
 }
 
-/// Scan a target, expanding `--identify-waf`, `--crawl` and `--forms` when
-/// set. WAF identification runs once, on the outermost call.
+/// Scan a target, expanding session resume, `--identify-waf`, `--crawl`
+/// and `--forms` when set. The session file and WAF identification are
+/// handled once, on the outermost call.
 pub fn scan_auto(client: &Client, conf: &Config) -> ScanResult {
+    if conf.session_file.is_some() {
+        if !conf.flush_session {
+            if let Some(kb) = crate::session::load(conf) {
+                return ScanResult {
+                    kb,
+                    log: vec![
+                        "session: loaded stored results for this target - tests skipped \
+                         (use --flush-session to re-test)"
+                            .to_string(),
+                    ],
+                };
+            }
+        }
+        let mut inner = conf.clone();
+        inner.session_file = None;
+        inner.flush_session = false;
+        let out = scan_auto(client, &inner);
+        let mut out = out;
+        match crate::session::save(conf, &out.kb) {
+            Ok(()) => out.log.push(format!(
+                "session: results saved to {}",
+                conf.session_file.as_deref().unwrap_or_default()
+            )),
+            Err(e) => out.log.push(format!("session: could not save results: {e}")),
+        }
+        return out;
+    }
     if conf.identify_waf {
         let (names, log) = crate::waf::identify(client, conf);
         let mut inner = conf.clone();

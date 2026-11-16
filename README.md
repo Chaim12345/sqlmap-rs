@@ -41,7 +41,9 @@ cargo run -p sqlmap-cli -- -u "http://localhost/item.php?id=1" --identify-waf
 
 Session cookies persist across requests: every response's Set-Cookie updates
 the cookies later requests carry (sqlmap's connect.py behavior); opt out with
-`--ignore-set-cookie`.
+`--ignore-set-cookie`. Scans are resumable through a session file
+(`-s FILE`, JSON subset of sqlmap's sqlite store): a re-run of the same target
+loads stored results instead of re-testing; `--flush-session` forces fresh tests.
 
 Verified end-to-end by integration tests that spawn a local deliberately-vulnerable
 app (`tests/vulnapp.py`, a MySQL emulator holding a fake in-memory database) and
@@ -70,8 +72,8 @@ push.
 - Stacked-queries and inline-query techniques
 - Enumeration query sets for non-MySQL DBMS (fingerprinting works for 5 DBMS;
   the information_schema queries used by --dbs/--dump are MySQL-flavored)
-- The remaining ~50 tamper scripts, resumable session files (sqlmap's sqlite
-  session store), multi-target modes, proxy support
+- The remaining ~50 tamper scripts, multi-target modes, proxy support
+- The session store is a per-target JSON cache, not sqlmap's sqlite schema
 
 The boundary between ported and not-ported is enforced by the code: the engine
 skips unknown techniques/tampers with a log line rather than pretending.
