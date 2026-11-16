@@ -406,7 +406,13 @@ class Handler(BaseHTTPRequestHandler):
             cookies = dict(
                 c.strip().split("=", 1) for c in (self.headers.get("Cookie") or "").split(";") if "=" in c
             )
-            page = "<html><body>sid:" + cookies.get("sid", "none") + "</body></html>"
+            page = "<html><body>sid:" + cookies.get("sid", "none")
+            # X-Forwarded-For is echoed only when sent, so header-tamper
+            # tests can observe it without changing the classic body.
+            xff = self.headers.get("X-Forwarded-For")
+            if xff:
+                page += " xff:" + xff
+            page += "</body></html>"
         elif u.path == "/search":
             page = (
                 "<html><body>"

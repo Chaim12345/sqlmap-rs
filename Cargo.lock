@@ -665,6 +665,7 @@ dependencies = [
  "regex",
  "serde",
  "sqlmap-core",
+ "sqlmap-tamper",
  "ureq",
  "url",
 ]

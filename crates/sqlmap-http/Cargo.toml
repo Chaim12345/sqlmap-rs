@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sqlmap-tamper = { path = "../sqlmap-tamper" }
 sqlmap-core = { path = "../sqlmap-core" }
 ureq = { version = "2", features = ["cookies", "gzip"] }
 url = "2"

@@ -30,6 +30,9 @@ pub struct Client {
     user_agent: String,
     follow_redirects: bool,
     ignore_set_cookies: bool,
+    /// Headers injected by header-based tamper scripts (xforwardedfor,
+    /// varnish). Applied to every request; explicit spec.headers win.
+    tamper_headers: Vec<(String, String)>,
     /// Session cookie jar (port of sqlmap's Set-Cookie tracking in
     /// `lib/request/connect.py`: unless --ignore-set-cookie, every response's
     /// Set-Cookie updates the cookies sent on later requests). Mutex because
@@ -69,6 +72,7 @@ impl Client {
                 .unwrap_or_else(|| "sqlmap-rs/0.1 (https://github.com/Chaim12345/sqlmap-rs)".into()),
             follow_redirects: conf.follow_redirects,
             ignore_set_cookies: conf.ignore_set_cookies,
+            tamper_headers: sqlmap_tamper::header_mutations(&conf.tampers, 0xC0FFEE),
             jar: std::sync::Mutex::new(jar),
         }
     }
@@ -123,6 +127,9 @@ impl Client {
             _ => self.agent.get(&spec.url),
         };
         req = req.set("User-Agent", &self.user_agent);
+        for (k, v) in &self.tamper_headers {
+            req = req.set(k, v);
+        }
         // Note: applied before spec.headers so a User-Agent entry there wins
         // (level>=3 header-place injection).
         for (k, v) in &spec.headers {

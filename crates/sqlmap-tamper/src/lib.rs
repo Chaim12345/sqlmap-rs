@@ -628,6 +628,36 @@ pub fn charunicodeencode(payload: &str) -> String {
     out
 }
 
+/// Header-based tampers (sqlmap tamper scripts that mutate request headers
+/// rather than the payload). Applied by the HTTP client; `apply_all` treats
+/// them as payload no-ops.
+pub const HEADER_TAMPERS: [&str; 2] = ["xforwardedfor", "varnish"];
+
+/// Header mutations from the active tamper set, in the order given.
+/// xforwardedfor: a random IPv4 address (upstream picks from public ranges);
+/// varnish: X-Forwarded-For fixed at 127.0.0.1 to slip behind Varnish ACLs.
+pub fn header_mutations(names: &[String], seed: u64) -> Vec<(String, String)> {
+    let mut rng = Rng::new(seed);
+    let mut out = Vec::new();
+    for name in names {
+        match name.as_str() {
+            "xforwardedfor" => {
+                let ip = format!(
+                    "{}.{}.{}.{}",
+                    rng.next() % 254 + 1,
+                    rng.next() % 255,
+                    rng.next() % 255,
+                    rng.next() % 254 + 1
+                );
+                out.push(("X-Forwarded-For".to_string(), ip));
+            }
+            "varnish" => out.push(("X-Forwarded-For".to_string(), "127.0.0.1".to_string())),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Names understood by the engine (sqlmap --tamper values).
 pub const AVAILABLE: [&str; 42] = [
     "space2comment",
@@ -722,6 +752,8 @@ pub fn apply_all(names: &[String], payload: &str, seed: u64) -> Result<String, S
             "versionedkeywords" => versionedkeywords(&out),
             "informationschemacomment" => informationschemacomment(&out),
             "charunicodeencode" => charunicodeencode(&out),
+            // Header tampers mutate headers, not the payload.
+            n if HEADER_TAMPERS.contains(&n) => out,
             other => return Err(format!("unknown tamper script: {other} (available: {AVAILABLE:?})")),
         };
     }
@@ -913,5 +945,20 @@ mod tests {
             "FROM INFORMATION_SCHEMA/**/.tables"
         );
         assert_eq!(charunicodeencode("a'b"), "a%u0027b");
+    }
+
+    #[test]
+    fn header_tampers_mutate_headers_not_payload() {
+        let names = vec!["xforwardedfor".to_string(), "varnish".to_string()];
+        let h = header_mutations(&names, 1);
+        assert_eq!(h.len(), 2);
+        assert_eq!(h[0].0, "X-Forwarded-For");
+        assert!(h[0].1.split('.').count() == 4, "{}", h[0].1);
+        assert_eq!(h[1], ("X-Forwarded-For".to_string(), "127.0.0.1".to_string()));
+        // The payload chain passes header tampers through unchanged.
+        assert_eq!(
+            apply_all(&names, "1 AND 1=1", 7).unwrap(),
+            "1 AND 1=1"
+        );
     }
 }

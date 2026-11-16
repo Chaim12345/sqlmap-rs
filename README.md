@@ -69,7 +69,7 @@ push.
 | `sqlmap-http` | `lib/request/connect.py`, `lib/core/comparison.py`, forms parsing of `lib/core/target.py`, `lib/utils/crawler.py` | ported (subset); `--forms` discovery; `--crawl` same-host crawler; `--threads` worker pool |
 | `sqlmap-dbms` | `data/xml/errors.xml`, DBMS fingerprint matching | ported (5 DBMS error tables) |
 | `sqlmap-payloads` | `data/xml/boundaries.xml`, `payloads/{boolean_blind,error_based,time_blind,stacked_queries,inline_query}.xml` | ported (level 1-2 entries, incl. UpdateXML, subquery SLEEP, MySQL # comment variants) |
-| `sqlmap-tamper` | `tamper/*.py` | partial: 42 scripts |
+| `sqlmap-tamper` | `tamper/*.py` | partial: 44 scripts, incl. header-based ones (xforwardedfor, varnish) applied to every request |
 | `sqlmap-detection` | `lib/controller/checks.py`, `lib/request/inference.py`, `lib/techniques/union/use.py`, `plugins/dbms/*/enumeration.py` | ported: boolean, error-based, time-based, stacked, inline; UNION (column probing + data retrieval); exfiltration `--dbs/--tables/--columns/--dump` over both channels with MySQL/PostgreSQL/MSSQL/Oracle query sets (MySQL is the only set the bundled MySQL-emulating test app can verify end-to-end); independent UNION probes/fetches run through the worker pool |
 | `sqlmap-cli` | `sqlmap.py`, `lib/parse/cmdline.py` | partial (core options) |
 
@@ -82,7 +82,7 @@ push.
 - A SQLite enumeration query set (its sqlite_master/PRAGMA shape does not fit
   the scalar-subquery exfil channels); unknown DBMS tags fall back to MySQL
   with a log note
-- The remaining ~30 tamper scripts, parallel multi-target scanning (the
+- The remaining ~28 tamper scripts, parallel multi-target scanning (the
   `-m` bulk file walks targets sequentially), proxy auth/SOCKS and
   proxying HTTPS targets (`--proxy` covers plain HTTP CONNECT-less relays)
 - The session store is a per-target JSON cache, not sqlmap's sqlite schema
