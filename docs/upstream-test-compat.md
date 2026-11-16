@@ -41,7 +41,7 @@ verbatim upstream inputs/expectations.
 | test_urls.py / test_targeturl.py | URL encode/decode, parameter handling | open - our params module |
 | test_target_parsing.py | target option plumbing | partial - only implemented options |
 | test_payload_marking.py | injection-point markers in bodies | partial - our `-r`/body parsing |
-| test_payloads_structure.py | payload invariants (placeholders, level/risk) | open - ours are Rust consts, invariants transferable |
+| [test_payloads_structure.py](https://github.com/sqlmapproject/sqlmap/blob/8b78b676c1376ae28feccd957b03bbecea05eff1/tests/test_payloads_structure.py) | payload/boundary structural invariants | **partial**: `crates/sqlmap-payloads/tests/upstream_structure.rs` pins unique/non-empty titles, level/risk ranges, clean marker rendering. Upstream's floors (>=200 payloads, >=30 boundaries) are NOT claimed - level 1-2 subset; current counts (22/8) pinned instead. Boundary-level ranges not pinned: our Boundary struct has no level field |
 | test_fingerprint.py / test_parse_modules.py | DBMS banner fingerprinting | partial - narrower in our port |
 | test_checks.py | detection helper constants | partial - engine shape differs |
 | test_reflection.py | reflection removal before comparison | partial - our filtered_page is simpler |
