@@ -44,7 +44,11 @@ class Handler(BaseHTTPRequestHandler):
             return True
         import base64
         want = "Basic " + base64.b64encode(AUTH.encode()).decode()
-        if self.headers.get("Proxy-Authorization") == want:
+        supplied = (self.headers.get("Proxy-Authorization") or "").split()
+        # HTTP authentication schemes are case-insensitive. ureq emits
+        # lowercase basic on CONNECT, while other clients use Basic.
+        if (len(supplied) == 2 and supplied[0].lower() == "basic"
+                and supplied[1] == want.split(" ", 1)[1]):
             return True
         self._log(f"{self.command} {self.path} auth=missing")
         self.send_response(407)

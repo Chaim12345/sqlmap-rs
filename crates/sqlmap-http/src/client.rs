@@ -33,11 +33,9 @@ pub struct Client {
     /// Headers injected by header-based tamper scripts (xforwardedfor,
     /// varnish). Applied to every request; explicit spec.headers win.
     tamper_headers: Vec<(String, String)>,
-    /// Proxy-Authorization header for plain-HTTP proxying. ureq only sends
-    /// proxy credentials inside an https CONNECT (and natively for SOCKS
-    /// password auth), so for http:// proxies with userinfo we add the
-    /// header to every request ourselves. Never set for SOCKS proxies,
-    /// where it would leak the proxy credentials to the origin.
+    /// Proxy-Authorization for plain-HTTP forwarding only. For HTTPS,
+    /// ureq authenticates the CONNECT request from proxy URL userinfo;
+    /// never put this header inside the TLS tunnel to the origin.
     proxy_auth: Option<String>,
     /// Session cookie jar (port of sqlmap's Set-Cookie tracking in
     /// `lib/request/connect.py`: unless --ignore-set-cookie, every response's
@@ -48,7 +46,13 @@ pub struct Client {
 
 impl Client {
     pub fn new(conf: &Config) -> Self {
-        let mut builder = ureq::AgentBuilder::new()
+        Self::with_builder(conf, ureq::AgentBuilder::new())
+    }
+
+    // Private builder injection lets tests trust only their generated local
+    // CA while exercising the production proxy and request setup unchanged.
+    fn with_builder(conf: &Config, builder: ureq::AgentBuilder) -> Self {
+        let mut builder = builder
             .timeout(Duration::from_secs(conf.timeout.max(1)))
             .https_only(false)
             // Redirects are followed manually in request() with a strict
@@ -289,3 +293,7 @@ fn read_response(resp: ureq::Response, elapsed: Duration) -> Response {
         elapsed,
     }
 }
+
+#[cfg(test)]
+#[path = "tls_connect_tests.rs"]
+mod tls_connect_tests;

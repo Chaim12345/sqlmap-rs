@@ -80,13 +80,23 @@ push.
   RANDOMBLOB LIKEs this port does not emulate)
 - A handful of upstream tamper scripts deliberately skipped (greatest,
   plus2concat/plus2fnconcat, securesphere; reasons in the tamper crate docs)
-- Proxying HTTPS targets (`--proxy` covers plain HTTP proxies, Basic proxy
-  auth via `--proxy-cred` or userinfo in the proxy URL for HTTP targets, and
-  SOCKS4/4A/5 via `socks5://...` proxy URLs; https targets go through CONNECT,
-  but ureq 2.12 sends no Proxy-Authorization on CONNECT, so authenticated
-  https proxying fails loud with the proxy's 407 instead of connecting -
-  pinned in crates/sqlmap-http/tests/tls_connect.rs)
 - The session store is a per-target JSON cache, not sqlmap's sqlite schema
+
+### HTTPS proxy verification
+
+HTTP proxy CONNECT authentication works with Basic credentials from either
+`--proxy-cred` or proxy URL userinfo. Local tests in
+`crates/sqlmap-http/src/tls_connect_tests.rs` exercise the real client with a
+local CA and signed server certificate: both credential sources succeed,
+proxy credentials are absent at the TLS origin, missing/wrong credentials
+fail without a direct fallback, untrusted certificates are rejected, and
+hostname verification remains active. Custom CA trust is test-only.
+
+Correction to the earlier limitation report: ureq 2.12.1 already sends
+CONNECT credentials. Our proxy fixture rejected lowercase `basic` because
+it compared the authentication scheme case-sensitively. The fixture now
+accepts case-insensitive schemes while still matching credentials exactly.
+The old 407 result was a fixture bug, not a missing client feature.
 
 The boundary between ported and not-ported is enforced by the code: the engine
 skips unknown techniques/tampers with a log line rather than pretending.
